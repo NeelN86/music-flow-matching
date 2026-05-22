@@ -4,34 +4,37 @@
 
 A Gradio app where a user records/uploads a melody (4–10s) and the app generates 4 audio variations while showing particles flowing through a learned 2D sound space. Extends the prior toy flow matching visualizer at `../flow_matching_visualizer/` (fully complete, use it as reference for porting).
 
+## Git repo
+- **Local**: `C:\Users\neeln\OneDrive\Desktop\Claude_projects\Music-flow-matching` (this is the git root)
+- **Remote**: https://github.com/NeelN86/music-flow-matching
+- All commits go here — do NOT commit to the parent `Claude_projects/` repo
+
 ## Current state (paused mid Step 2)
 
-### Committed
-| Commit | What |
-|--------|------|
-| `1ca70dd` | Full scaffold — all stub files with `raise NotImplementedError` |
-| `9d264ca` | Step 1 complete — `src/data.py` + `tests/test_data.py`, all 5 tests pass |
+### Committed (one initial commit — 582d3a9)
+Everything is in a single initial commit pushed to GitHub, including:
+- Full scaffold (all stubs)
+- `src/data.py` + `tests/test_data.py` (5/5 pass)
+- `src/vae.py` — fully implemented with logvar clamp fix (`torch.clamp(..., -4.0, 4.0)`)
+- `tests/test_vae.py` — fully implemented; `test_vae_loss_decreases` uses lr=1e-3, 200 steps
 
-### Uncommitted changes (in working tree — staged or not)
-- **`src/vae.py`** — fully implemented, but has one bug fix applied mid-session:
-  - Added `logvar = torch.clamp(self.fc_logvar(h), -4.0, 4.0)` in `AudioEncoder.forward`
-  - Prevents KL term blowing up to NaN during early training (standard practice)
-- **`tests/test_vae.py`** — fully implemented, test updated:
-  - `test_vae_loss_decreases` uses lr=1e-3, 200 steps, compares first-10 vs last-10 average
-  - Was 7/8 passing before the logvar clamp fix; the clamp + test update should fix the 8th
+### VAE status
+- 7/8 tests were passing before the logvar clamp fix was applied
+- The clamp fix + updated test should bring it to 8/8 — **unverified**, must confirm next session
 
 ## Resume here next session
 
-**Step 1:** Verify the VAE tests all pass now:
+**Step 1:** Verify the VAE tests all pass:
 ```
 python tests/test_vae.py
 ```
 Expected: all 8 PASS. If `test_vae_loss_decreases` still fails, try increasing steps to 300 or using a smaller test model.
 
-**Step 2:** Commit the working vae.py + test_vae.py:
+**Step 2:** If all 8 pass, commit the verification:
 ```
-git add src/vae.py tests/test_vae.py
-git commit -m "Step 2: implement vae.py AudioVAE and test_vae.py (8/8 pass)"
+git add -A
+git commit -m "Step 2: verify vae.py AudioVAE and test_vae.py (8/8 pass)"
+git push
 ```
 
 **Step 3:** Implement the three diagnostic scripts — these are the milestone gate for Step 2 (do NOT proceed to model.py until they pass):
@@ -167,7 +170,7 @@ Size: ~2.5 GB for nsynth-valid. Use `--max_samples 500` for fast dev iteration b
 Paste this to resume:
 
 "Resume the project. Read CLAUDE.md fully before doing anything.
-Current state: paused mid Step 2. src/vae.py and tests/test_vae.py 
-are implemented but uncommitted — logvar clamp fix was applied.
+Current state: paused mid Step 2. src/vae.py and tests/test_vae.py
+are committed but VAE test results unverified — logvar clamp fix was applied.
 Start by running: python tests/test_vae.py
 Report results before proceeding."
