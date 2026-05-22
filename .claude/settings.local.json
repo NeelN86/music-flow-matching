@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem *)",
+      "Bash(pip show *)",
+      "Bash(python -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(python *)",
+      "Bash(dir C:\\\\Users\\\\neeln\\\\OneDrive\\\\Desktop\\\\Claude_projects\\\\Music-flow-matching *)",
+      "PowerShell(pip install *)",
+      "Bash(git remote *)",
+      "Bash(gh repo *)",
+      "Bash(git *)"
+    ]
+  }
+}
