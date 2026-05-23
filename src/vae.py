@@ -179,6 +179,7 @@ def train_vae(
     beta: float = VAE_BETA,
     checkpoint_path: str = VAE_CHECKPOINT,
     max_samples: int | None = None,
+    beta_warmup_epochs: int = 5,
     progress_cb: Callable[[int, int, float, float, float], None] | None = None,
 ) -> tuple[AudioVAE, list[dict]]:
     """Train AudioVAE on NSynth and return (model, per-step log dicts).
@@ -186,8 +187,11 @@ def train_vae(
     Each log dict: {epoch, step, total, recon, kl}.
 
     Args:
-        max_samples: Cap dataset size for fast smoke tests (None = full dataset).
-        progress_cb: Called as cb(epoch, step, total_loss, recon_loss, kl_loss).
+        max_samples:         Cap dataset size for fast smoke tests (None = full dataset).
+        beta_warmup_epochs:  Linearly ramp beta from 0 → target over this many epochs.
+                             Prevents posterior collapse by letting the encoder develop
+                             structure before the KL penalty kicks in fully.
+        progress_cb:         Called as cb(epoch, step, total_loss, recon_loss, kl_loss).
 
     Returns:
         (model in eval() mode, history list).
@@ -204,12 +208,15 @@ def train_vae(
     model.train()
     global_step = 0
     for epoch in range(epochs):
+        # KL warmup: linearly ramp beta from 0 to target over beta_warmup_epochs
+        beta_eff = beta * min(1.0, (epoch + 1) / max(1, beta_warmup_epochs))
+
         for batch in loader:
             mel_batch = batch[0]  # [B, 1, N_MELS, N_FRAMES]
 
             optimizer.zero_grad()
             recon, mu, logvar = model(mel_batch)
-            total, recon_loss, kl_loss = audio_vae_loss(recon, mel_batch, mu, logvar, beta)
+            total, recon_loss, kl_loss = audio_vae_loss(recon, mel_batch, mu, logvar, beta_eff)
             total.backward()
             # Gradient clipping guards against NaN loss early in training
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -231,7 +238,8 @@ def train_vae(
 
         print(
             f"epoch {epoch + 1}/{epochs}  "
-            f"total={log['total']:.4f}  recon={log['recon']:.4f}  kl={log['kl']:.4f}"
+            f"total={log['total']:.4f}  recon={log['recon']:.4f}  kl={log['kl']:.4f}  "
+            f"beta_eff={beta_eff:.3f}"
         )
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)

@@ -24,12 +24,13 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=VAE_LR)
     parser.add_argument("--beta", type=float, default=VAE_BETA)
     parser.add_argument("--checkpoint", default=VAE_CHECKPOINT)
+    parser.add_argument("--beta_warmup", type=int, default=5, help="KL warmup epochs (0 = no warmup)")
     args = parser.parse_args()
 
     json_path = os.path.join(args.data_dir, "examples.json")
     audio_dir = os.path.join(args.data_dir, "audio")
 
-    print(f"Training VAE: epochs={args.epochs}  beta={args.beta}  lr={args.lr}  batch={args.batch_size}")
+    print(f"Training VAE: epochs={args.epochs}  beta={args.beta}  beta_warmup={args.beta_warmup}  lr={args.lr}  batch={args.batch_size}")
     if args.max_samples:
         print(f"Smoke-test mode: max_samples={args.max_samples}")
 
@@ -42,6 +43,7 @@ def main() -> None:
         beta=args.beta,
         checkpoint_path=args.checkpoint,
         max_samples=args.max_samples,
+        beta_warmup_epochs=args.beta_warmup,
     )
 
 

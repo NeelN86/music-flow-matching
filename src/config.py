@@ -16,7 +16,7 @@ VAE_BOTTLENECK_FC: int = 512
 VAE_LATENT_DIM: int = 2            # 2D bottleneck — non-negotiable for visualization
 
 # ── VAE training ──────────────────────────────────────────────────────────────
-VAE_BETA: float = 0.5              # β-VAE KL weight; <1.0 prioritizes reconstruction
+VAE_BETA: float = 0.1              # lowered from 0.5 — posterior collapse observed at 0.5
 VAE_LR: float = 1e-3
 VAE_BATCH_SIZE: int = 64
 VAE_EPOCHS: int = 30
