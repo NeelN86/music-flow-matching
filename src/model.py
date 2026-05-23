@@ -38,7 +38,14 @@ class VelocityMLP(nn.Module):
         n_hidden: int = FLOW_N_HIDDEN,
     ) -> None:
         super().__init__()
-        raise NotImplementedError
+        # Input: (x, y, t, style_x, style_y) = 5 dims
+        in_dim = 5
+        layers: list[nn.Module] = []
+        for _ in range(n_hidden):
+            layers += [nn.Linear(in_dim, hidden_width), nn.SiLU()]
+            in_dim = hidden_width
+        layers.append(nn.Linear(hidden_width, 2))
+        self.net = nn.Sequential(*layers)
 
     def forward(
         self,
@@ -58,4 +65,15 @@ class VelocityMLP(nn.Module):
         Returns:
             [B, 2] predicted velocity (vx, vy).
         """
-        raise NotImplementedError
+        B = x.shape[0]
+
+        # Normalise t to [B, 1]
+        t_col = t.view(-1, 1).expand(B, 1) if t.numel() > 1 else t.view(1, 1).expand(B, 1)
+
+        if style is None:
+            style = torch.zeros(B, 2, device=x.device, dtype=x.dtype)
+        else:
+            style = style.expand(B, -1)  # handles [1,2] → [B,2] broadcast
+
+        inp = torch.cat([x, t_col, style], dim=1)  # [B, 5]
+        return self.net(inp)
