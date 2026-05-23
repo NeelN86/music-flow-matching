@@ -23,8 +23,8 @@ VAE_EPOCHS: int = 30
 
 # ── Mel normalization (global stats over NSynth-valid) ────────────────────────
 # Placeholders — overwrite after running data.compute_mel_stats()
-MEL_MEAN: float = -5.0
-MEL_STD: float = 2.5
+MEL_MEAN: float = -43.9487   # computed from nsynth-valid (2000-sample subset)
+MEL_STD: float = 20.9642    # computed from nsynth-valid (2000-sample subset)
 
 # ── Flow matching ─────────────────────────────────────────────────────────────
 FLOW_HIDDEN_WIDTH: int = 256
