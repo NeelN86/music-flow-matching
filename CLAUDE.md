@@ -136,5 +136,5 @@ data/nsynth-valid/   — 2000-sample subset used for all training
 ## Next Session Opener
 
 "Resume the project. Read CLAUDE.md first.
-Core app is complete and e2e verified at 7.8s. Both checkpoints exist.
-Next work: stretch goals Step 9 (style slider) and Step 10 (sonic scrubbing grid) in app.py."
+All 10 steps are complete and committed (fa865ee). The app runs — `python app.py` → http://127.0.0.1:7860.
+Next work: fix UI issues spotted during manual testing (user noted problems but did not specify them yet — ask at session start)."
