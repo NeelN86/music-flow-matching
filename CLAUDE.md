@@ -47,19 +47,21 @@ Full pipeline validated:
 4. animate_flow writes `outputs/flow.gif` (3MB, 70 frames @ 20fps) ✅
 5. Total e2e: **7.8s on CPU** ✅
 
-## Resume here next session
+## Current state — ALL STEPS COMPLETE (2026-05-23)
 
-**The core app is complete.** Stretch goals remaining:
+Steps 9 and 10 are implemented and verified live.
 
-**Step 9 — Style slider** (in app.py):
-Add a gr.Slider that lets the user offset the style mu (e.g., +/- 1 in each dimension)
-before running euler_integrate. Wires into `mu = mu + style_offset`.
+**Step 9 — Style sliders**: "Style offsets" accordion with `style_x`/`style_y` sliders
+(-1 to +1, step 0.1). Applied as `mu = mu + offset` before `euler_integrate`. Wired
+into `generate_variations(audio, style_offset_x, style_offset_y)`.
 
-**Step 10 — Sonic scrubbing grid** (in app.py):
-gr.Plot showing latent_scatter of training data. Click → emit a [1,2] coordinate
-as style input and immediately generate one variation at that point.
-
-Both are additive UI features — no changes to ML code needed.
+**Step 10 — Sonic scrubbing grid**: "Sound Space Explorer" accordion with:
+- `scrub_x`/`scrub_y` sliders (-3 to +3, step 0.05) that move a white cursor dot
+  on the `latent_scatter` plot in real time
+- "Load latent space" button: loads from `outputs/latents_cache.npz` (instant if cached)
+  or encodes 300 NSynth-valid samples (~5s first run). Shows status + points count.
+- "Generate at this point" button: generates 1 WAV via `generate_at_point(x, y)`,
+  writes to `outputs/scrub/variation_0.wav`. Verified: 130KB WAV returned.
 
 ---
 
@@ -76,8 +78,8 @@ Both are additive UI features — no changes to ML code needed.
 | ✅ 6 | `src/vocoder.py`, `tests/test_vocoder.py` | 4 WAVs created ✓ |
 | ✅ 7 | `src/visualize.py` | GIF 70 frames @ 20fps ✓ |
 | ✅ 8 | `app.py` | e2e 7.8s on CPU ✓ |
-| ⬜ 9 | Style slider (stretch) | — |
-| ⬜ 10 | Sonic scrubbing grid (stretch) | — |
+| ✅ 9 | Style slider (stretch) | sliders wired, mu+offset verified |
+| ✅ 10 | Sonic scrubbing grid (stretch) | scatter + scrub WAV 130KB verified |
 
 ---
 
