@@ -94,7 +94,22 @@ def mel_thumbnail(
     Returns:
         Figure with a single imshow (viridis colormap, origin='lower').
     """
-    raise NotImplementedError
+    from src.data import denormalize_mel
+
+    mel = mel_normalized
+    if mel.ndim == 3:
+        mel = mel[0]  # [N_MELS, N_FRAMES]
+
+    mel_db = denormalize_mel(mel).numpy()
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(mel_db, origin="lower", aspect="auto", cmap="viridis")
+    if title:
+        ax.set_title(title)
+    ax.set_xlabel("Frame")
+    ax.set_ylabel("Mel bin")
+    fig.tight_layout()
+    return fig
 
 
 def latent_scatter(
@@ -116,4 +131,32 @@ def latent_scatter(
     Returns:
         matplotlib Figure.
     """
-    raise NotImplementedError
+    unique_labels = sorted(set(labels))
+    cmap = plt.cm.get_cmap("tab20", len(unique_labels))
+    color_map = {lbl: cmap(i) for i, lbl in enumerate(unique_labels)}
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 6))
+    else:
+        fig = ax.figure
+
+    label_arr = np.asarray(labels)
+    for lbl in unique_labels:
+        mask = label_arr == lbl
+        ax.scatter(
+            latents[mask, 0], latents[mask, 1],
+            c=[color_map[lbl]], label=lbl, s=12, alpha=0.7, linewidths=0,
+        )
+
+    if highlight is not None:
+        ax.scatter(
+            highlight[:, 0], highlight[:, 1],
+            c="white", s=60, zorder=5, edgecolors="black", linewidths=0.8,
+        )
+
+    ax.legend(loc="upper right", fontsize=8, markerscale=2, framealpha=0.7)
+    ax.set_xlabel("z₀")
+    ax.set_ylabel("z₁")
+    ax.set_title("Latent Space — instrument families")
+    fig.tight_layout()
+    return fig

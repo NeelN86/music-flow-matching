@@ -178,6 +178,7 @@ def train_vae(
     lr: float = VAE_LR,
     beta: float = VAE_BETA,
     checkpoint_path: str = VAE_CHECKPOINT,
+    max_samples: int | None = None,
     progress_cb: Callable[[int, int, float, float, float], None] | None = None,
 ) -> tuple[AudioVAE, list[dict]]:
     """Train AudioVAE on NSynth and return (model, per-step log dicts).
@@ -185,6 +186,7 @@ def train_vae(
     Each log dict: {epoch, step, total, recon, kl}.
 
     Args:
+        max_samples: Cap dataset size for fast smoke tests (None = full dataset).
         progress_cb: Called as cb(epoch, step, total_loss, recon_loss, kl_loss).
 
     Returns:
@@ -192,7 +194,7 @@ def train_vae(
     """
     from src.data import NSynthDataset, make_dataloader
 
-    dataset = NSynthDataset(json_path, audio_dir, normalize=True)
+    dataset = NSynthDataset(json_path, audio_dir, max_samples=max_samples, normalize=True)
     loader = make_dataloader(dataset, batch_size=batch_size, shuffle=True)
 
     model = AudioVAE()

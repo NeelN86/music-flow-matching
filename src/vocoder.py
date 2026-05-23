@@ -56,7 +56,24 @@ def mel_to_wav(
     Returns:
         wav: [T] float32 numpy array at SAMPLE_RATE.
     """
-    raise NotImplementedError
+    if isinstance(mel_normalized, torch.Tensor):
+        mel_np = mel_normalized.detach().cpu().numpy()
+    else:
+        mel_np = np.asarray(mel_normalized)
+
+    if mel_np.ndim == 3:
+        mel_np = mel_np[0]  # [N_MELS, N_FRAMES]
+
+    # Denormalize: normalized → dB-scale log-mel
+    mel_db = mel_np * MEL_STD + MEL_MEAN
+
+    # dB → power, then mel filterbank inversion → STFT magnitude
+    power = librosa.db_to_power(mel_db)
+    stft_mag = librosa.feature.inverse.mel_to_stft(power, sr=SAMPLE_RATE, n_fft=N_FFT)
+
+    # Phase recovery via Griffin-Lim
+    wav = librosa.griffinlim(stft_mag, n_iter=n_iter, hop_length=HOP_LENGTH)
+    return wav.astype(np.float32)
 
 
 def decode_batch(
