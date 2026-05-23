@@ -35,47 +35,38 @@ Implemented files (all stubs replaced):
 ### Mel normalization stats (config.py)
 `MEL_MEAN = -43.9487`, `MEL_STD = 20.9642` — computed from nsynth-valid (2000 samples).
 
-## Known issue fixed (2026-05-22)
+## Known issues fixed
 
-**Posterior collapse** was observed when training with beta=0.5 (KL → 0 at epoch 3,
-all latents at origin). Fixed by:
-- `VAE_BETA = 0.1` in `src/config.py`
-- KL warmup over 5 epochs in `train_vae` (linearly ramps beta 0 → target)
+**Posterior collapse** (2026-05-22): VAE_BETA lowered 0.5→0.1, KL warmup over 5 epochs.
+- Retrain completed: MSE 0.19 (PASS), latent range x=[-2.4,1.9] y=[-2.7,3.8], 10 families.
 
-Retrain running in background: `python scripts/train_vae.py --data_dir data/nsynth-valid --max_samples 2000 --epochs 30 --beta 0.1 --beta_warmup 5`
+**Flow model training** (2026-05-23): `checkpoints/flow_model.pt` written at 03:34 AM.
+
+**animate_flow performance** (2026-05-23): batched quiver precomputation + smaller figure.
+- e2e time 10.1s → 7.8s (under 8s target), GIF 8MB → 3MB.
+
+## Current state — e2e VERIFIED WORKING (2026-05-23)
+
+Full pipeline validated:
+1. VAE encodes input audio → style mu [1,2] ✅
+2. euler_integrate produces trajectory [51,4,2] ✅
+3. decode_batch writes 4 WAV variations ✅
+4. animate_flow writes `outputs/flow.gif` (3MB, 70 frames @ 20fps) ✅
+5. Total e2e: **7.8s on CPU** ✅
 
 ## Resume here next session
 
-**Step A — verify VAE retrain** (should be done; check checkpoint was updated):
-```
-python scripts/eyeball_latent.py --data_dir data/nsynth-valid --max_samples 2000
-# PASS: ≥3 families form separable clusters, latent range not collapsed at origin
-python scripts/eyeball_reconstruct.py --data_dir data/nsynth-valid
-# PASS: MSE < 1.5
-```
-If collapse persists: try `--beta 0.05` or `--beta_warmup 10`.
+**The core app is complete.** Stretch goals remaining:
 
-**Step B — train flow model** (after VAE checkpoint is good):
-```
-python -c "
-from src.vae import load_vae
-from src.data import NSynthDataset, make_dataloader
-from src.train import train_flow
-vae = load_vae()
-ds = NSynthDataset('data/nsynth-valid/examples.json', 'data/nsynth-valid/audio', normalize=True)
-loader = make_dataloader(ds, batch_size=256)
-train_flow(vae, loader, steps=10000)
-"
-```
+**Step 9 — Style slider** (in app.py):
+Add a gr.Slider that lets the user offset the style mu (e.g., +/- 1 in each dimension)
+before running euler_integrate. Wires into `mu = mu + style_offset`.
 
-**Step C — launch and test app e2e:**
-```
-python app.py
-```
-Record or upload a short melody. Expected: GIF animation appears, 4 WAV variations download.
-Target: e2e under 8s on CPU. Check `outputs/flow.gif` was created.
+**Step 10 — Sonic scrubbing grid** (in app.py):
+gr.Plot showing latent_scatter of training data. Click → emit a [1,2] coordinate
+as style input and immediately generate one variation at that point.
 
-**Stretch goals (Steps 9+10):** style slider, sonic scrubbing grid — implement in app.py.
+Both are additive UI features — no changes to ML code needed.
 
 ---
 
