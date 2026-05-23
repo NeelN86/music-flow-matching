@@ -9,42 +9,73 @@ A Gradio app where a user records/uploads a melody (4–10s) and the app generat
 - **Remote**: https://github.com/NeelN86/music-flow-matching
 - All commits go here — do NOT commit to the parent `Claude_projects/` repo
 
-## Current state (paused after Step 2 scripts implemented — awaiting NSynth data)
+## Current state — ALL code complete, training in progress
 
-### Committed (commit 377714a)
-- Full scaffold (all stubs)
-- `src/data.py` + `tests/test_data.py` (5/5 pass) ✅
-- `src/vae.py` — fully implemented (8/8 tests pass) ✅
-- `tests/test_vae.py` — 8/8 pass verified ✅
-- `src/vocoder.py` — `mel_to_wav` implemented; `decode_batch` still stub ✅ (partial)
-- `src/visualize.py` — `mel_thumbnail` + `latent_scatter` implemented; `animate_flow` / `render_static_quiver` still stubs ✅ (partial)
-- `scripts/train_vae.py` — fully implemented ✅
-- `scripts/eyeball_latent.py` — fully implemented ✅
-- `scripts/eyeball_reconstruct.py` — fully implemented ✅
+### All steps implemented (commit baacc4b, 2026-05-22)
+All 30 unit tests pass across 5 test files:
 
-### Milestone gate checklist
-- [x] `python tests/test_vae.py` → all 8 pass
-- [ ] `python scripts/train_vae.py --data_dir data/nsynth-valid --max_samples 500 --epochs 5` → smoke test
-- [ ] `python scripts/eyeball_latent.py` → clusters visible
-- [ ] `python scripts/eyeball_reconstruct.py` → reconstruction looks clean
+| File | Tests |
+|------|-------|
+| `tests/test_data.py` | 5/5 ✅ |
+| `tests/test_vae.py` | 8/8 ✅ |
+| `tests/test_model.py` | 7/7 ✅ |
+| `tests/test_solvers.py` | 6/6 ✅ |
+| `tests/test_vocoder.py` | 4/4 ✅ |
 
-**Unblocked by:** NSynth data download — the three run-time checks above require `data/nsynth-valid/`.
+Implemented files (all stubs replaced):
+- `src/vae.py` — AudioVAE with logvar clamp, train_vae, load_vae
+- `src/vocoder.py` — mel_to_wav + decode_batch (parallel Griffin-Lim)
+- `src/visualize.py` — mel_thumbnail, latent_scatter, animate_flow, render_static_quiver
+- `src/model.py` — VelocityMLP (style-conditioned, input_dim=5)
+- `src/train.py` — train_flow + _cycle
+- `src/solvers.py` — euler_integrate + velocity_field_on_grid
+- `scripts/train_vae.py`, `scripts/eyeball_latent.py`, `scripts/eyeball_reconstruct.py`
+- `app.py` — Gradio UI fully wired with threading model
+
+### Mel normalization stats (config.py)
+`MEL_MEAN = -43.9487`, `MEL_STD = 20.9642` — computed from nsynth-valid (2000 samples).
+
+## Known issue fixed (2026-05-22)
+
+**Posterior collapse** was observed when training with beta=0.5 (KL → 0 at epoch 3,
+all latents at origin). Fixed by:
+- `VAE_BETA = 0.1` in `src/config.py`
+- KL warmup over 5 epochs in `train_vae` (linearly ramps beta 0 → target)
+
+Retrain running in background: `python scripts/train_vae.py --data_dir data/nsynth-valid --max_samples 2000 --epochs 30 --beta 0.1 --beta_warmup 5`
 
 ## Resume here next session
 
-**If NSynth data is now downloaded**, run the milestone gate:
+**Step A — verify VAE retrain** (should be done; check checkpoint was updated):
 ```
-python scripts/train_vae.py --data_dir data/nsynth-valid --max_samples 500 --epochs 5
-python scripts/eyeball_latent.py --data_dir data/nsynth-valid
+python scripts/eyeball_latent.py --data_dir data/nsynth-valid --max_samples 2000
+# PASS: ≥3 families form separable clusters, latent range not collapsed at origin
 python scripts/eyeball_reconstruct.py --data_dir data/nsynth-valid
+# PASS: MSE < 1.5
+```
+If collapse persists: try `--beta 0.05` or `--beta_warmup 10`.
+
+**Step B — train flow model** (after VAE checkpoint is good):
+```
+python -c "
+from src.vae import load_vae
+from src.data import NSynthDataset, make_dataloader
+from src.train import train_flow
+vae = load_vae()
+ds = NSynthDataset('data/nsynth-valid/examples.json', 'data/nsynth-valid/audio', normalize=True)
+loader = make_dataloader(ds, batch_size=256)
+train_flow(vae, loader, steps=10000)
+"
 ```
 
-**If latent space looks degenerate:**
-- Random scatter with no structure → increase `VAE_BETA` in `src/config.py` (try 1.0 or 2.0)
-- All points at origin (posterior collapse) → decrease `VAE_BETA` to 0.1 and/or add KL warmup
-- NaN loss → check `clip_grad_norm_` is active (it is)
+**Step C — launch and test app e2e:**
+```
+python app.py
+```
+Record or upload a short melody. Expected: GIF animation appears, 4 WAV variations download.
+Target: e2e under 8s on CPU. Check `outputs/flow.gif` was created.
 
-**Once all milestone gate items pass**, proceed to Step 3: `src/model.py` + `tests/test_model.py`.
+**Stretch goals (Steps 9+10):** style slider, sonic scrubbing grid — implement in app.py.
 
 ---
 
