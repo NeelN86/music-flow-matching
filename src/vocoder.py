@@ -94,4 +94,27 @@ def decode_batch(
     Returns:
         List of B absolute paths: ["outputs/variation_0.wav", ...].
     """
-    raise NotImplementedError
+    os.makedirs(output_dir, exist_ok=True)
+
+    # VAE decode in main thread — torch is not thread-safe for forward passes
+    with torch.no_grad():
+        mels = vae_decoder(latents)  # [B, 1, N_MELS, N_FRAMES]
+
+    B = mels.shape[0]
+    # Convert to numpy now so threads never touch torch tensors
+    mels_np = [mels[i, 0].cpu().numpy() for i in range(B)]
+    paths = [
+        os.path.abspath(os.path.join(output_dir, f"variation_{i}.wav"))
+        for i in range(B)
+    ]
+
+    def _write_wav(args: tuple[np.ndarray, str]) -> str:
+        mel_np, path = args
+        wav = mel_to_wav(mel_np)
+        sf.write(path, wav, SAMPLE_RATE)
+        return path
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+        list(pool.map(_write_wav, zip(mels_np, paths)))
+
+    return paths

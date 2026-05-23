@@ -62,7 +62,84 @@ def animate_flow(
     Returns:
         Absolute path to the saved GIF.
     """
-    raise NotImplementedError
+    model.eval()
+
+    # Pre-compute full trajectory [n_steps+1, B, 2]
+    traj = euler_integrate(model, x0, n_steps=n_steps, style=style).numpy()
+    B = x0.shape[0]
+
+    # Pre-compute quiver grids for every frame (keeps animation callback lightweight)
+    quiver_frames: list[tuple] = []
+    with torch.no_grad():
+        for i in range(n_steps + 1):
+            t = i / n_steps
+            X, Y, U, V = velocity_field_on_grid(model, t, bounds, grid_res, style=style)
+            mag = np.hypot(U.numpy(), V.numpy())
+            quiver_frames.append((X.numpy(), Y.numpy(), U.numpy(), V.numpy(), mag))
+
+    all_mags = np.stack([f[4] for f in quiver_frames])
+    vmin, vmax = float(all_mags.min()), float(all_mags.max())
+
+    # Figure setup
+    fig, ax = plt.subplots(figsize=(6, 6))
+    fig.patch.set_facecolor("#111111")
+    ax.set_facecolor("#111111")
+    ax.set_xlim(bounds[0], bounds[1])
+    ax.set_ylim(bounds[2], bounds[3])
+    ax.set_aspect("equal")
+    ax.tick_params(colors="white")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#444444")
+
+    # Layer 1: quiver field (background)
+    X0, Y0, U0, V0, mag0 = quiver_frames[0]
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    quiv = ax.quiver(
+        X0, Y0, U0, V0, mag0,
+        cmap="plasma", norm=norm, alpha=0.4, zorder=1,
+        angles="xy", scale_units="xy", scale=1.5,
+    )
+
+    # Layer 2: trail LineCollection
+    lc = LineCollection([], linewidths=1.0, zorder=2)
+    ax.add_collection(lc)
+
+    # Layer 3: particle scatter (foreground)
+    scat = ax.scatter(traj[0, :, 0], traj[0, :, 1], s=10, c="white", zorder=3, linewidths=0)
+    title = ax.set_title("t = 0.00", color="white", pad=8)
+
+    def _update(frame: int):
+        # 1. Quiver
+        _, _, U, V, mag = quiver_frames[frame]
+        quiv.set_UVC(U, V, mag)
+
+        # 2. Trails — alpha ramps oldest→0 newest→0.7
+        segments: list[np.ndarray] = []
+        rgba: list[tuple] = []
+        start = max(0, frame - trail_len)
+        window = traj[start: frame + 1]  # [k, B, 2]
+        k = window.shape[0]
+        if k >= 2:
+            alphas = np.linspace(0.0, 0.7, k - 1)
+            for j in range(B):
+                pts = window[:, j, :]
+                segs = np.stack([pts[:-1], pts[1:]], axis=1)  # [k-1, 2, 2]
+                segments.extend(segs)
+                rgba.extend((0.55, 0.78, 1.0, float(a)) for a in alphas)
+        lc.set_segments(segments)
+        lc.set_color(rgba)
+
+        # 3. Particles
+        scat.set_offsets(traj[frame])
+        title.set_text(f"t = {frame / n_steps:.2f}")
+        return quiv, lc, scat, title
+
+    anim = FuncAnimation(fig, _update, frames=n_steps + 1, interval=1000 // fps, blit=False)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    anim.save(out_path, writer="pillow", fps=fps)
+    plt.close(fig)
+    return os.path.abspath(out_path)
 
 
 def render_static_quiver(
@@ -74,7 +151,28 @@ def render_static_quiver(
     ax: plt.Axes | None = None,
 ) -> plt.Figure:
     """Render velocity field at a fixed time t. Used for Gradio slider preview."""
-    raise NotImplementedError
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor("#111111")
+    else:
+        fig = ax.figure
+
+    X, Y, U, V = velocity_field_on_grid(model, t, bounds, res, style=style)
+    X, Y = X.numpy(), Y.numpy()
+    U, V = U.numpy(), V.numpy()
+    mag = np.hypot(U, V)
+
+    ax.set_facecolor("#111111")
+    ax.quiver(X, Y, U, V, mag, cmap="plasma", alpha=0.4, zorder=1)
+    ax.set_xlim(bounds[0], bounds[1])
+    ax.set_ylim(bounds[2], bounds[3])
+    ax.set_aspect("equal")
+    ax.set_title(f"velocity field   t = {t:.2f}", color="white")
+    ax.tick_params(colors="white")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#444444")
+    return fig
 
 
 def mel_thumbnail(
