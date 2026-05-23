@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Iterator
 
 import torch
@@ -23,7 +24,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from src.config import FLOW_BATCH_SIZE, FLOW_CHECKPOINT, FLOW_LR, FLOW_STEPS
+from src.config import CHECKPOINT_DIR, FLOW_BATCH_SIZE, FLOW_CHECKPOINT, FLOW_LR, FLOW_STEPS
 from src.model import VelocityMLP
 from src.vae import AudioVAE
 
@@ -49,9 +50,62 @@ def train_flow(
     Returns:
         (model in eval() mode, loss history list).
     """
-    raise NotImplementedError
+    model = VelocityMLP()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_history: list[float] = []
+
+    vae.eval()
+    model.train()
+
+    data_iter = _cycle(dataloader)
+
+    for step in range(steps):
+        batch = next(data_iter)
+        mels = batch[0]  # [B, 1, N_MELS, N_FRAMES]
+
+        # Encode with frozen VAE — no gradient through it
+        with torch.no_grad():
+            mu, logvar = vae.encode(mels)
+
+        # x1: reparameterized latent; style: deterministic mu
+        std = (0.5 * logvar).exp()
+        x1 = mu + std * torch.randn_like(std)   # [B, 2]
+        style = mu                               # [B, 2]
+
+        B = x1.shape[0]
+        x0 = torch.randn(B, 2)                  # noise source
+        t = torch.rand(B)
+
+        t_col = t.view(-1, 1)
+        x_t = (1.0 - t_col) * x0 + t_col * x1  # linear interpolation
+        v_target = x1 - x0                      # conditional flow target velocity
+
+        v_pred = model(x_t, t, style)
+        loss = F.mse_loss(v_pred, v_target)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        scalar = loss.item()
+        loss_history.append(scalar)
+
+        if progress_cb is not None:
+            progress_cb(step, scalar)
+
+        if (step + 1) % 100 == 0:
+            print(f"step {step + 1:5d}/{steps}  loss={scalar:.4f}")
+
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    torch.save(model.state_dict(), checkpoint_path)
+    print(f"Saved flow model to {checkpoint_path}")
+
+    model.eval()
+    return model, loss_history
 
 
 def _cycle(dataloader: DataLoader) -> Iterator[Tensor]:
     """Infinite iterator over a DataLoader — restarts when exhausted."""
-    raise NotImplementedError
+    while True:
+        yield from dataloader
