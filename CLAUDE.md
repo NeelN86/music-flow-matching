@@ -9,73 +9,42 @@ A Gradio app where a user records/uploads a melody (4–10s) and the app generat
 - **Remote**: https://github.com/NeelN86/music-flow-matching
 - All commits go here — do NOT commit to the parent `Claude_projects/` repo
 
-## Current state (paused mid Step 2)
+## Current state (paused after Step 2 scripts implemented — awaiting NSynth data)
 
-### Committed (one initial commit — 582d3a9)
-Everything is in a single initial commit pushed to GitHub, including:
+### Committed (commit 377714a)
 - Full scaffold (all stubs)
-- `src/data.py` + `tests/test_data.py` (5/5 pass)
-- `src/vae.py` — fully implemented with logvar clamp fix (`torch.clamp(..., -4.0, 4.0)`)
-- `tests/test_vae.py` — fully implemented; `test_vae_loss_decreases` uses lr=1e-3, 200 steps
-
-### VAE status
-- 7/8 tests were passing before the logvar clamp fix was applied
-- The clamp fix + updated test should bring it to 8/8 — **unverified**, must confirm next session
-
-## Resume here next session
-
-**Step 1:** Verify the VAE tests all pass:
-```
-python tests/test_vae.py
-```
-Expected: all 8 PASS. If `test_vae_loss_decreases` still fails, try increasing steps to 300 or using a smaller test model.
-
-**Step 2:** If all 8 pass, commit the verification:
-```
-git add -A
-git commit -m "Step 2: verify vae.py AudioVAE and test_vae.py (8/8 pass)"
-git push
-```
-
-**Step 3:** Implement the three diagnostic scripts — these are the milestone gate for Step 2 (do NOT proceed to model.py until they pass):
-
-### `scripts/train_vae.py`
-CLI wrapper around `src.vae.train_vae`. Should support:
-- `--data_dir` (path to NSynth split, e.g. `data/nsynth-valid`)
-- `--epochs` (default 30)
-- `--max_samples` (default None; use 500 for fast smoke test)
-- Prints recon and KL separately each epoch (so you can catch posterior collapse early)
-- Saves to `checkpoints/audio_vae.pt`
-
-### `scripts/eyeball_latent.py`
-Port of `../flow_matching_visualizer/scripts/eyeball_latent.py` but for NSynth instead of MNIST digits. Should:
-- Load the trained VAE from `checkpoints/audio_vae.pt`
-- Encode a batch of NSynth mels → collect mu values
-- Scatter plot of 2D mu values colored by `instrument_family_str` (11 families: bass, brass, flute, guitar, keyboard, mallet, organ, reed, string, synth_lead, vocal)
-- Save figure to `outputs/latent_scatter.png`
-- Milestone pass: ≥3 families form separable clusters, latent range roughly [-4, 4]²
-
-### `scripts/eyeball_reconstruct.py`
-New (no prior equivalent). Should:
-- Load VAE, pick a random NSynth sample
-- Run it through encoder (get mu) then decoder (get recon) without sampling (use mu directly)
-- Show 3-panel figure: original mel | reconstructed mel | absolute difference heatmap
-- Call `src.vocoder.mel_to_wav` on both and save as `outputs/original.wav` and `outputs/reconstructed.wav`
-- Print MSE between original and reconstructed normalized mel
-- Milestone pass: MSE < 1.5, harmonic bands visible in both panels, audio recognizable
+- `src/data.py` + `tests/test_data.py` (5/5 pass) ✅
+- `src/vae.py` — fully implemented (8/8 tests pass) ✅
+- `tests/test_vae.py` — 8/8 pass verified ✅
+- `src/vocoder.py` — `mel_to_wav` implemented; `decode_batch` still stub ✅ (partial)
+- `src/visualize.py` — `mel_thumbnail` + `latent_scatter` implemented; `animate_flow` / `render_static_quiver` still stubs ✅ (partial)
+- `scripts/train_vae.py` — fully implemented ✅
+- `scripts/eyeball_latent.py` — fully implemented ✅
+- `scripts/eyeball_reconstruct.py` — fully implemented ✅
 
 ### Milestone gate checklist
-- [ ] `python tests/test_vae.py` → all 8 pass
+- [x] `python tests/test_vae.py` → all 8 pass
 - [ ] `python scripts/train_vae.py --data_dir data/nsynth-valid --max_samples 500 --epochs 5` → smoke test
 - [ ] `python scripts/eyeball_latent.py` → clusters visible
 - [ ] `python scripts/eyeball_reconstruct.py` → reconstruction looks clean
 
-**Do not start Step 3 (model.py) until all milestone gate items pass.**
+**Unblocked by:** NSynth data download — the three run-time checks above require `data/nsynth-valid/`.
 
-### If the latent space looks degenerate:
+## Resume here next session
+
+**If NSynth data is now downloaded**, run the milestone gate:
+```
+python scripts/train_vae.py --data_dir data/nsynth-valid --max_samples 500 --epochs 5
+python scripts/eyeball_latent.py --data_dir data/nsynth-valid
+python scripts/eyeball_reconstruct.py --data_dir data/nsynth-valid
+```
+
+**If latent space looks degenerate:**
 - Random scatter with no structure → increase `VAE_BETA` in `src/config.py` (try 1.0 or 2.0)
 - All points at origin (posterior collapse) → decrease `VAE_BETA` to 0.1 and/or add KL warmup
-- NaN loss (shouldn't happen now with logvar clamp, but just in case) → check `clip_grad_norm_` is active
+- NaN loss → check `clip_grad_norm_` is active (it is)
+
+**Once all milestone gate items pass**, proceed to Step 3: `src/model.py` + `tests/test_model.py`.
 
 ---
 
@@ -85,7 +54,7 @@ New (no prior equivalent). Should:
 |------|-------|------|
 | ✅ 0 | Scaffold, .gitignore, README, requirements.txt | committed |
 | ✅ 1 | `src/data.py`, `tests/test_data.py` | 5/5 pass |
-| 🔄 2 | `src/vae.py`, `tests/test_vae.py`, 3 scripts | **MILESTONE GATE** |
+| 🔄 2 | `src/vae.py`, `tests/test_vae.py`, 3 scripts | **MILESTONE GATE** (scripts done; awaiting NSynth data to run) |
 | ⬜ 3 | `src/model.py`, `tests/test_model.py` | 7 tests pass |
 | ⬜ 4 | `src/train.py` | loss decreases on 100-step smoke run |
 | ⬜ 5 | `src/solvers.py`, `tests/test_solvers.py` | trajectory shape [51,4,2] |
