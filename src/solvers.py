@@ -45,7 +45,22 @@ def euler_integrate(
     Returns:
         trajectory: [n_steps+1, B, 2]  (includes x0 as first frame).
     """
-    raise NotImplementedError
+    model.eval()
+    t0, t1 = t_span
+    dt = (t1 - t0) / n_steps
+    B = x0.shape[0]
+
+    x = x0.clone()
+    trajectory = [x]
+
+    for i in range(n_steps):
+        t = t0 + i * dt
+        t_batch = torch.full((B,), t, dtype=x.dtype)
+        v = model(x, t_batch, style)
+        x = x + dt * v
+        trajectory.append(x)
+
+    return torch.stack(trajectory, dim=0)  # [n_steps+1, B, 2]
 
 
 @torch.no_grad()
@@ -63,9 +78,26 @@ def velocity_field_on_grid(
         t:      Time in [0, 1].
         bounds: (x_min, x_max, y_min, y_max).
         res:    Grid resolution (res × res points).
-        style:  [1, 2] style vector, broadcast to all grid points. None → zeros.
+        style:  [1, 2] style vector, broadcast to all grid points. None -> zeros.
 
     Returns:
         (X, Y, U, V) each [res, res] — grid coordinates and velocity components.
     """
-    raise NotImplementedError
+    model.eval()
+    x_min, x_max, y_min, y_max = bounds
+    xs = torch.linspace(x_min, x_max, res)
+    ys = torch.linspace(y_min, y_max, res)
+
+    X, Y = torch.meshgrid(xs, ys, indexing="xy")
+    grid = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)  # [res*res, 2]
+
+    t_batch = torch.full((grid.shape[0],), t)
+
+    # Broadcast style [1, 2] → [res*res, 2] if provided
+    grid_style = style.expand(grid.shape[0], -1) if style is not None else None
+
+    v = model(grid, t_batch, grid_style)  # [res*res, 2]
+
+    U = v[:, 0].reshape(res, res)
+    V = v[:, 1].reshape(res, res)
+    return X, Y, U, V
