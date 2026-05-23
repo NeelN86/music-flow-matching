@@ -68,20 +68,34 @@ def animate_flow(
     traj = euler_integrate(model, x0, n_steps=n_steps, style=style).numpy()
     B = x0.shape[0]
 
-    # Pre-compute quiver grids for every frame (keeps animation callback lightweight)
-    quiver_frames: list[tuple] = []
-    with torch.no_grad():
-        for i in range(n_steps + 1):
-            t = i / n_steps
-            X, Y, U, V = velocity_field_on_grid(model, t, bounds, grid_res, style=style)
-            mag = np.hypot(U.numpy(), V.numpy())
-            quiver_frames.append((X.numpy(), Y.numpy(), U.numpy(), V.numpy(), mag))
+    # Pre-compute ALL quiver grids in a single batched forward pass
+    x_min, x_max, y_min, y_max = bounds
+    xs = torch.linspace(x_min, x_max, grid_res)
+    ys = torch.linspace(y_min, y_max, grid_res)
+    Xg, Yg = torch.meshgrid(xs, ys, indexing="xy")  # [res, res]
+    grid = torch.stack([Xg.reshape(-1), Yg.reshape(-1)], dim=1)  # [G, 2]
+    G = grid_res * grid_res
+    N = n_steps + 1
+    ts = torch.linspace(0.0, 1.0, N)  # [N]
 
-    all_mags = np.stack([f[4] for f in quiver_frames])
-    vmin, vmax = float(all_mags.min()), float(all_mags.max())
+    with torch.no_grad():
+        grid_all = grid.unsqueeze(0).expand(N, -1, -1).reshape(N * G, 2)
+        t_all = ts.unsqueeze(1).expand(N, G).reshape(N * G)
+        style_all = style.expand(N * G, -1) if style is not None else None
+        v_all = model(grid_all, t_all, style_all)  # [N*G, 2]
+
+    U_all = v_all[:, 0].reshape(N, grid_res, grid_res).numpy()
+    V_all = v_all[:, 1].reshape(N, grid_res, grid_res).numpy()
+    Xg_np, Yg_np = Xg.numpy(), Yg.numpy()
+    mags_all = np.hypot(U_all, V_all)  # [N, res, res]
+    quiver_frames = list(zip(
+        [Xg_np] * N, [Yg_np] * N, U_all, V_all, mags_all
+    ))
+
+    vmin, vmax = float(mags_all.min()), float(mags_all.max())
 
     # Figure setup
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(4, 4), dpi=80)
     fig.patch.set_facecolor("#111111")
     ax.set_facecolor("#111111")
     ax.set_xlim(bounds[0], bounds[1])
