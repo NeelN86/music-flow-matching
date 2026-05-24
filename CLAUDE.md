@@ -40,6 +40,11 @@ All 30 unit tests pass. Both checkpoints trained. Full pipeline verified at 7.8s
 **animate_flow performance** (2026-05-23): batched quiver precomputation + smaller figure.
 - e2e time 10.1s → 7.8s (under 8s target), GIF 8MB → 3MB.
 
+**Gradio 6 audio input fixes** (2026-05-24):
+- Added `format="wav"` to `gr.Audio` recorder so microphone recordings are saved as WAV (not WebM/Opus) and can be played back.
+- Fixed generation crash: Gradio 6 passes audio as `{"path": "..."}` dict instead of plain string; `_resolve_audio_path()` normalises both forms.
+- Redesigned input UX: two-step flow — record/upload → click "Use this recording ▶" to confirm and preview → then "Generate Variations".
+
 ## Current state — e2e VERIFIED WORKING (2026-05-23)
 
 Full pipeline validated:
@@ -140,5 +145,6 @@ data/nsynth-valid/   — full split: 12,678 samples used for flow model retrain
 ## Next Session Opener
 
 "Resume the project. Read CLAUDE.md first.
-Flow model retrained (30k steps, cosine LR, 12678 samples). App runs — `python app.py` → http://127.0.0.1:7860.
-Next work: test audio quality of variations against input (user should listen and verify they now sound similar to the input at default slider settings). Ask the user if they have other UI or quality issues to address."
+Flow model retrained (30k steps, cosine LR). Audio input UX fixed for Gradio 6. App runs — `python app.py` → http://127.0.0.1:7860.
+Flow: record/upload → 'Use this recording ▶' → preview playback → 'Generate Variations'.
+Next work: ask the user how the audio quality feels (do variations sound similar to input?), and whether there are any remaining UI issues."

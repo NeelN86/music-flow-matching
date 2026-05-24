@@ -148,18 +148,36 @@ def _load_space_handler():
 
 # ── Core generation ────────────────────────────────────────────────────────────
 
+def _resolve_audio_path(audio_path) -> str:
+    """Gradio 6 can pass a dict {path:...} or a plain str — normalise to str."""
+    if audio_path is None:
+        raise gr.Error("No audio set. Record or upload audio and click 'Use this recording' first.")
+    if isinstance(audio_path, dict):
+        audio_path = audio_path.get("path") or audio_path.get("name", "")
+    if not audio_path or not os.path.exists(str(audio_path)):
+        raise gr.Error(f"Audio file not found: {audio_path}")
+    return str(audio_path)
+
+
+def confirm_recording(audio_input):
+    """Copy the recorded/uploaded audio into the confirmed state + preview."""
+    if audio_input is None:
+        return None, None, "No audio — record or upload first."
+    path = _resolve_audio_path(audio_input)
+    name = os.path.basename(path)
+    return path, path, f"Ready: {name}"
+
+
 def generate_variations(
-    audio_path: str,
+    audio_path,
     style_offset_x: float = 0.0,
     style_offset_y: float = 0.0,
 ) -> tuple:
-    """Main handler: input audio → animation GIF + 4 WAV outputs + mel figure.
-
-    style_offset_{x,y}: Step 9 sliders — added to the encoded style mu before
-    running euler_integrate, letting the user shift the generation point.
-    """
+    """Main handler: input audio → animation GIF + 4 WAV outputs + mel figure."""
     if _vae is None or _flow_model is None:
         raise gr.Error("Models not loaded. Check that VAE and flow checkpoints exist.")
+
+    audio_path = _resolve_audio_path(audio_path)
 
     # 1. Audio → style
     wav = load_audio(audio_path)
@@ -229,19 +247,41 @@ def update_quiver_preview(t: float) -> object:
 
 with gr.Blocks(title="Musical Flow Matching") as demo:
     gr.Markdown("# Musical Flow Matching Visualizer")
-    gr.Markdown(
-        "Upload or record a short melody (4–10s). "
-        "The app generates 4 audio variations while showing particles "
-        "flow through the learned sound space."
-    )
 
+    confirmed_audio = gr.State(value=None)
+
+    # ── Step 1: Record or upload ──────────────────────────────────────────────
+    gr.Markdown("### Step 1 — Record or upload your audio (4–10s)")
     with gr.Row():
-        audio_input = gr.Audio(
+        audio_recorder = gr.Audio(
             sources=["microphone", "upload"],
             type="filepath",
-            label="Input audio",
+            format="wav",
+            label="Record or upload",
+        )
+        with gr.Column():
+            confirm_btn = gr.Button("Use this recording ▶", variant="secondary")
+            input_status = gr.Textbox(
+                value="No audio set — record or upload, then click above.",
+                label="Input status",
+                interactive=False,
+            )
+
+    # ── Step 2: Preview & Generate ────────────────────────────────────────────
+    gr.Markdown("### Step 2 — Preview & generate")
+    with gr.Row():
+        audio_preview = gr.Audio(
+            label="Confirmed input (preview here before generating)",
+            type="filepath",
+            interactive=False,
         )
         mel_plot = gr.Plot(label="Input mel spectrogram")
+
+    confirm_btn.click(
+        confirm_recording,
+        inputs=[audio_recorder],
+        outputs=[confirmed_audio, audio_preview, input_status],
+    )
 
     # Step 9 — style offset sliders
     with gr.Accordion("Style offsets", open=False):
@@ -283,10 +323,10 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
         quiver_plot = gr.Plot(label="Velocity field at t")
         t_slider.change(update_quiver_preview, inputs=t_slider, outputs=quiver_plot)
 
-    # Step 9: pass sliders into generate_variations
+    # Step 9: pass sliders into generate_variations (uses confirmed_audio State)
     generate_btn.click(
         generate_variations,
-        inputs=[audio_input, style_x, style_y],
+        inputs=[confirmed_audio, style_x, style_y],
         outputs=[animation_output, *variation_outputs, mel_plot],
     )
 
