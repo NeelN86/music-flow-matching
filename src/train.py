@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from src.config import CHECKPOINT_DIR, FLOW_BATCH_SIZE, FLOW_CHECKPOINT, FLOW_LR, FLOW_STEPS
+from src.config import CHECKPOINT_DIR, FLOW_BATCH_SIZE, FLOW_CHECKPOINT, FLOW_LR, FLOW_LR_MIN, FLOW_LR_WARMUP, FLOW_STEPS
 from src.model import VelocityMLP
 from src.vae import AudioVAE
 
@@ -52,6 +52,7 @@ def train_flow(
     """
     model = VelocityMLP()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = _cosine_schedule(optimizer, steps, lr, FLOW_LR_MIN, FLOW_LR_WARMUP)
     loss_history: list[float] = []
 
     vae.eval()
@@ -87,6 +88,7 @@ def train_flow(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        scheduler.step()
 
         scalar = loss.item()
         loss_history.append(scalar)
@@ -94,8 +96,9 @@ def train_flow(
         if progress_cb is not None:
             progress_cb(step, scalar)
 
-        if (step + 1) % 100 == 0:
-            print(f"step {step + 1:5d}/{steps}  loss={scalar:.4f}")
+        if (step + 1) % 500 == 0:
+            current_lr = scheduler.get_last_lr()[0]
+            print(f"step {step + 1:5d}/{steps}  loss={scalar:.4f}  lr={current_lr:.2e}")
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     torch.save(model.state_dict(), checkpoint_path)
@@ -103,6 +106,26 @@ def train_flow(
 
     model.eval()
     return model, loss_history
+
+
+def _cosine_schedule(
+    optimizer: torch.optim.Optimizer,
+    total_steps: int,
+    lr_max: float,
+    lr_min: float,
+    warmup_steps: int,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Linear warmup then cosine decay from lr_max down to lr_min."""
+    import math
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return lr_min / lr_max + (1.0 - lr_min / lr_max) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def _cycle(dataloader: DataLoader) -> Iterator[Tensor]:

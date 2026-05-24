@@ -23,7 +23,7 @@ All 30 unit tests pass. Both checkpoints trained. Full pipeline verified at 7.8s
 
 ### Checkpoints
 - `checkpoints/audio_vae.pt` — trained 30 epochs, beta=0.1 w/ 5-epoch warmup. MSE 0.19, latent range x=[-2.4,1.9] y=[-2.7,3.8], 10 instrument families separable.
-- `checkpoints/flow_model.pt` — trained 10,000 steps on NSynth-valid (2000 samples).
+- `checkpoints/flow_model.pt` — retrained 30,000 steps on full NSynth-valid (12,678 samples), cosine LR 1e-3→1e-5 w/ 1k warmup. Final loss 0.645, floor 0.528. Flow endpoints land 0.33–0.68 units from input mu (vs scattered before). Saved 2026-05-24 08:45 AM.
 
 ### Mel normalization stats (config.py)
 `MEL_MEAN = -43.9487`, `MEL_STD = 20.9642` — computed from nsynth-valid (2000 samples).
@@ -34,6 +34,8 @@ All 30 unit tests pass. Both checkpoints trained. Full pipeline verified at 7.8s
 - Retrain completed: MSE 0.19 (PASS), latent range x=[-2.4,1.9] y=[-2.7,3.8], 10 families.
 
 **Flow model training** (2026-05-23): `checkpoints/flow_model.pt` written at 03:34 AM.
+
+**Flow model retrain** (2026-05-24): Retrained 30k steps on full 12,678-sample dataset with cosine LR schedule + 100 Euler steps at inference. Endpoints now cluster 0.33–0.68 units from input mu — variations should be audibly similar to input at default settings.
 
 **animate_flow performance** (2026-05-23): batched quiver precomputation + smaller figure.
 - e2e time 10.1s → 7.8s (under 8s target), GIF 8MB → 3MB.
@@ -73,7 +75,7 @@ into `generate_variations(audio, style_offset_x, style_offset_y)`.
 | ✅ 1 | `src/data.py`, `tests/test_data.py` | 5/5 pass |
 | ✅ 2 | `src/vae.py`, `tests/test_vae.py`, 3 scripts | MSE 0.19, no collapse |
 | ✅ 3 | `src/model.py`, `tests/test_model.py` | 7/7 pass |
-| ✅ 4 | `src/train.py` | 10k-step run complete |
+| ✅ 4 | `src/train.py`, `scripts/train_flow.py` | 30k-step retrain, cosine LR, 12678 samples |
 | ✅ 5 | `src/solvers.py`, `tests/test_solvers.py` | trajectory [51,4,2] ✓ |
 | ✅ 6 | `src/vocoder.py`, `tests/test_vocoder.py` | 4 WAVs created ✓ |
 | ✅ 7 | `src/visualize.py` | GIF 70 frames @ 20fps ✓ |
@@ -115,12 +117,14 @@ Loss: MSE(recon, x) + beta * KL  where beta=0.1 (warmup 5 epochs)
 ## Config values that matter most
 
 ```python
-# src/config.py — actual values as of 2026-05-23
+# src/config.py — actual values as of 2026-05-24
 VAE_BETA = 0.1          # lowered from 0.5 to fix posterior collapse
 MEL_MEAN = -43.9487     # computed from nsynth-valid (2000 samples)
 MEL_STD = 20.9642       # computed from nsynth-valid (2000 samples)
 GRIFFIN_LIM_ITERS = 60  # vocoder quality vs speed trade-off
 ANIMATION_N_STEPS = 70  # 70 frames @ 20fps = 3.5s animation
+EULER_STEPS = 100       # raised from 50 — halves integration error, free improvement
+FLOW_STEPS = 30_000     # raised from 10k — full retrain with cosine LR schedule
 ```
 
 ---
@@ -128,13 +132,13 @@ ANIMATION_N_STEPS = 70  # 70 frames @ 20fps = 3.5s animation
 ## NSynth data (already downloaded)
 
 ```
-data/nsynth-valid/   — 2000-sample subset used for all training
-  examples.json
+data/nsynth-valid/   — full split: 12,678 samples used for flow model retrain
+  examples.json      — (VAE was trained on 2000-sample subset)
   audio/*.wav
 ```
 
 ## Next Session Opener
 
 "Resume the project. Read CLAUDE.md first.
-All 10 steps are complete and committed (fa865ee). The app runs — `python app.py` → http://127.0.0.1:7860.
-Next work: fix UI issues spotted during manual testing (user noted problems but did not specify them yet — ask at session start)."
+Flow model retrained (30k steps, cosine LR, 12678 samples). App runs — `python app.py` → http://127.0.0.1:7860.
+Next work: test audio quality of variations against input (user should listen and verify they now sound similar to the input at default slider settings). Ask the user if they have other UI or quality issues to address."

@@ -30,12 +30,14 @@ MEL_STD: float = 20.9642    # computed from nsynth-valid (2000-sample subset)
 FLOW_HIDDEN_WIDTH: int = 256
 FLOW_N_HIDDEN: int = 3
 FLOW_LR: float = 1e-3
+FLOW_LR_MIN: float = 1e-5          # cosine schedule floor
+FLOW_LR_WARMUP: int = 1_000        # linear warmup steps
 FLOW_BATCH_SIZE: int = 256
-FLOW_STEPS: int = 10_000
+FLOW_STEPS: int = 30_000
 
 # ── Inference / generation ────────────────────────────────────────────────────
 N_VARIATIONS: int = 4
-EULER_STEPS: int = 50
+EULER_STEPS: int = 100
 
 # ── Animation ─────────────────────────────────────────────────────────────────
 ANIMATION_FPS: int = 20
