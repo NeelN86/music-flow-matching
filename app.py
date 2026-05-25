@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 
@@ -27,6 +28,7 @@ from src.config import (
     N_VARIATIONS,
     OUTPUT_DIR,
     VAE_CHECKPOINT,
+    VAE_LATENT_DIM,
 )
 from src.data import audio_to_mel, load_audio, normalize_mel
 from src.model import VelocityMLP
@@ -40,8 +42,10 @@ _vae: AudioVAE | None = None
 _flow_model: VelocityMLP | None = None
 
 # Step 10: cached latent space for the scrubbing grid
-_latents: np.ndarray | None = None
+_latents: np.ndarray | None = None        # [N, VAE_LATENT_DIM] full-dim latents
+_latents_2d: np.ndarray | None = None     # [N, 2] PCA projections for display
 _latent_labels: list[str] | None = None
+_pca: tuple[np.ndarray, np.ndarray] | None = None  # (mean [D], components [2, D])
 _LATENT_CACHE = os.path.join(OUTPUT_DIR, "latents_cache.npz")
 
 
@@ -73,12 +77,17 @@ def _load_models() -> tuple[str, str]:
 
 def _try_load_latent_cache() -> bool:
     """Load latent cache from disk if available. Returns True on success."""
-    global _latents, _latent_labels
+    global _latents, _latents_2d, _latent_labels, _pca
     if not os.path.exists(_LATENT_CACHE):
         return False
     data = np.load(_LATENT_CACHE, allow_pickle=True)
     _latents = data["latents"]
     _latent_labels = list(data["labels"])
+    if "pca_mean" in data and "pca_components" in data:
+        _pca = (data["pca_mean"], data["pca_components"])
+        _latents_2d = (_latents - _pca[0]) @ _pca[1].T  # [N, 2]
+    else:
+        _latents_2d = _latents  # fallback: assume already 2D
     return True
 
 
@@ -111,11 +120,25 @@ def _compute_latent_space(max_samples: int = 300) -> str:
             all_mu.append(mu.numpy())
             all_labels.extend(families)
 
-    _latents = np.concatenate(all_mu, axis=0)
+    _latents = np.concatenate(all_mu, axis=0)       # [N, D]
     _latent_labels = all_labels
 
+    # Fit PCA: project D-dim latents to 2D for visualization
+    mean = _latents.mean(axis=0)                     # [D]
+    centered = _latents - mean
+    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+    components = Vt[:2]                              # [2, D] top-2 principal components
+    _pca = (mean, components)
+    _latents_2d = centered @ components.T            # [N, 2]
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    np.savez(_LATENT_CACHE, latents=_latents, labels=np.array(_latent_labels))
+    np.savez(
+        _LATENT_CACHE,
+        latents=_latents,
+        labels=np.array(_latent_labels),
+        pca_mean=mean,
+        pca_components=components,
+    )
     return f"Loaded {len(_latents)} points ({len(set(_latent_labels))} families)."
 
 
@@ -134,7 +157,7 @@ def _scrub_plot(scrub_x: float, scrub_y: float):
         return fig
 
     highlight = np.array([[scrub_x, scrub_y]])
-    return latent_scatter(_latents, _latent_labels, highlight=highlight)
+    return latent_scatter(_latents_2d, _latent_labels, highlight=highlight)
 
 
 def _load_space_handler():
@@ -144,6 +167,31 @@ def _load_space_handler():
     else:
         status = f"Loaded {len(_latents)} points from cache."
     return _scrub_plot(0.0, 0.0), status
+
+
+# ── Particle initialisation helpers ───────────────────────────────────────────
+
+def _make_initial_particles(mu: torch.Tensor, radius: float) -> torch.Tensor:
+    """N_VARIATIONS starting positions spread around mu in the latent space.
+
+    radius=0  → pure N(0,I) noise (original random behaviour).
+    radius>0  → if PCA is loaded, spread along ±PC1 and ±PC2 (the two most
+                important variation axes); otherwise spread on a unit sphere
+                scaled to radius. Keeps particles near the input style while
+                guaranteeing spatial diversity.
+    """
+    if radius == 0.0:
+        return torch.randn(N_VARIATIONS, VAE_LATENT_DIM)
+    if _pca is not None:
+        _, pca_comp = _pca
+        pc1 = torch.from_numpy(pca_comp[0]).float()   # [D]
+        pc2 = torch.from_numpy(pca_comp[1]).float()   # [D]
+        directions = torch.stack([pc1, pc2, -pc1, -pc2])   # [4, D]
+        offsets = radius * directions
+    else:
+        offsets = torch.randn(N_VARIATIONS, VAE_LATENT_DIM)
+        offsets = offsets / offsets.norm(dim=1, keepdim=True) * radius
+    return mu.expand(N_VARIATIONS, -1).clone() + offsets
 
 
 # ── Core generation ────────────────────────────────────────────────────────────
@@ -168,10 +216,32 @@ def confirm_recording(audio_input):
     return path, path, f"Ready: {name}"
 
 
+def reconstruct_input(audio_path) -> str:
+    """Encode → decode through the VAE only, bypassing the flow model.
+
+    This is the best reconstruction possible from the 2D bottleneck and serves
+    as a quality baseline: if this already sounds bad the issue is the VAE/vocoder,
+    not the flow model.
+    """
+    if _vae is None:
+        raise gr.Error("VAE not loaded.")
+    audio_path = _resolve_audio_path(audio_path)
+    wav = load_audio(audio_path)
+    mel = audio_to_mel(wav)
+    mel_t = normalize_mel(mel).unsqueeze(0).unsqueeze(0)
+    with torch.no_grad():
+        mu, _ = _vae.encode(mel_t)
+    recon_dir = os.path.join(OUTPUT_DIR, "recon")
+    os.makedirs(recon_dir, exist_ok=True)
+    paths = decode_batch(mu, _vae.decode, output_dir=recon_dir)
+    return paths[0]
+
+
 def generate_variations(
     audio_path,
     style_offset_x: float = 0.0,
     style_offset_y: float = 0.0,
+    variation_radius: float = 1.0,
 ) -> tuple:
     """Main handler: input audio → animation GIF + 4 WAV outputs + mel figure."""
     if _vae is None or _flow_model is None:
@@ -184,17 +254,17 @@ def generate_variations(
     mel = audio_to_mel(wav)
     mel_t = normalize_mel(mel).unsqueeze(0).unsqueeze(0)  # [1, 1, N_MELS, N_FRAMES]
     with torch.no_grad():
-        mu, _ = _vae.encode(mel_t)  # [1, 2]
+        mu, _ = _vae.encode(mel_t)  # [1, VAE_LATENT_DIM]
 
     # Step 9: apply style offset
     if style_offset_x != 0.0 or style_offset_y != 0.0:
         offset = torch.tensor([[style_offset_x, style_offset_y]])
         mu = mu + offset
 
-    # 2. Integrate N_VARIATIONS noise particles
-    x0 = torch.randn(N_VARIATIONS, 2)
+    # 2. Integrate N_VARIATIONS noise particles (Fix B+D: spread around mu)
+    x0 = _make_initial_particles(mu, variation_radius)
     trajectory = euler_integrate(_flow_model, x0, n_steps=EULER_STEPS, style=mu)
-    final_latents = trajectory[-1]  # [N_VARIATIONS, 2]
+    final_latents = trajectory[-1]  # [N_VARIATIONS, VAE_LATENT_DIM]
 
     # 3. Decode in background so it runs concurrently with animate_flow
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -207,9 +277,21 @@ def generate_variations(
     decode_thread = threading.Thread(target=_decode, daemon=True)
     decode_thread.start()
 
-    # 4. Animate (~3.5s — covers decode_batch runtime)
+    # 4. Determine PCA for visualisation — use global if loaded, else fit quickly
+    #    on the trajectory itself so the animation always works even before the
+    #    user clicks "Load latent space".
+    vis_pca = _pca
+    if vis_pca is None and VAE_LATENT_DIM > 2:
+        traj_np = trajectory.numpy()                          # [steps+1, B, D]
+        pts = traj_np.reshape(-1, VAE_LATENT_DIM)
+        mean = pts.mean(axis=0)
+        centered = pts - mean
+        _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+        vis_pca = (mean, Vt[:2])
+
+    # 5. Animate (~3.5s — covers decode_batch runtime)
     gif_path = animate_flow(
-        _flow_model, x0, style=mu,
+        _flow_model, x0, style=mu, pca=vis_pca,
         n_steps=ANIMATION_N_STEPS,
         out_path=os.path.join(OUTPUT_DIR, "flow.gif"),
     )
@@ -224,11 +306,21 @@ def generate_variations(
 
 
 def generate_at_point(scrub_x: float, scrub_y: float) -> str:
-    """Step 10: generate one variation at an explicit latent coordinate."""
+    """Step 10: generate one variation at a 2D PCA coordinate.
+
+    The (scrub_x, scrub_y) position is back-projected from 2D PCA space to
+    the full latent space before being used as the style vector.
+    """
     if _vae is None or _flow_model is None:
         raise gr.Error("Models not loaded.")
-    style = torch.tensor([[scrub_x, scrub_y]])
-    x0 = torch.randn(1, 2)
+    if _pca is not None:
+        pca_mean, pca_comp = _pca
+        coord = np.array([[scrub_x, scrub_y]])          # [1, 2]
+        style_np = coord @ pca_comp + pca_mean          # [1, D]
+        style = torch.from_numpy(style_np).float()
+    else:
+        style = torch.tensor([[scrub_x, scrub_y]])
+    x0 = torch.randn(1, VAE_LATENT_DIM)
     traj = euler_integrate(_flow_model, x0, n_steps=EULER_STEPS, style=style)
     scrub_out_dir = os.path.join(OUTPUT_DIR, "scrub")
     os.makedirs(scrub_out_dir, exist_ok=True)
@@ -240,7 +332,7 @@ def update_quiver_preview(t: float) -> object:
     """Gradio slider callback: show velocity field at time t (unconditional)."""
     if _flow_model is None:
         return None
-    return render_static_quiver(_flow_model, t)
+    return render_static_quiver(_flow_model, t, pca=_pca)
 
 
 # ── UI definition ─────────────────────────────────────────────────────────────
@@ -283,15 +375,45 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
         outputs=[confirmed_audio, audio_preview, input_status],
     )
 
-    # Step 9 — style offset sliders
-    with gr.Accordion("Style offsets", open=False):
+    # Fix A — VAE reconstruction baseline
+    gr.Markdown(
+        "**Optional:** Reconstruct your input through the VAE only (no flow model). "
+        "This is the best quality the decoder can produce — if it sounds bad, "
+        "the VAE bottleneck/vocoder is the limiting factor."
+    )
+    with gr.Row():
+        reconstruct_btn = gr.Button("Reconstruct Input (VAE only)", variant="secondary")
+        reconstruction_audio = gr.Audio(
+            label="VAE Reconstruction (quality baseline)",
+            type="filepath",
+            interactive=False,
+        )
+
+    reconstruct_btn.click(
+        reconstruct_input,
+        inputs=[confirmed_audio],
+        outputs=[reconstruction_audio],
+    )
+
+    # Style offsets + variation radius
+    with gr.Accordion("Style offsets & variation radius", open=False):
         gr.Markdown(
-            "Shift the input audio's style vector before generating. "
-            "Positive X moves toward brighter timbres; Y shifts pitch character."
+            "**Style offsets:** shift the input's style vector before generating. "
+            "Positive X → brighter timbres; Y shifts pitch character."
         )
         with gr.Row():
             style_x = gr.Slider(-1.0, 1.0, value=0.0, step=0.1, label="Style offset X")
             style_y = gr.Slider(-1.0, 1.0, value=0.0, step=0.1, label="Style offset Y")
+        gr.Markdown(
+            "**Variation radius:** how far each of the 4 particles starts from the input style. "
+            "Smaller → closer to input, more similar to each other. "
+            "Larger → more diverse but may stray from input character. "
+            "0 = original random noise (unpredictable)."
+        )
+        variation_radius = gr.Slider(
+            0.0, 3.0, value=1.0, step=0.1,
+            label="Variation radius",
+        )
 
     generate_btn = gr.Button("Generate Variations", variant="primary")
     animation_output = gr.Image(label="Particle flow animation", type="filepath")
@@ -323,10 +445,9 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
         quiver_plot = gr.Plot(label="Velocity field at t")
         t_slider.change(update_quiver_preview, inputs=t_slider, outputs=quiver_plot)
 
-    # Step 9: pass sliders into generate_variations (uses confirmed_audio State)
     generate_btn.click(
         generate_variations,
-        inputs=[confirmed_audio, style_x, style_y],
+        inputs=[confirmed_audio, style_x, style_y, variation_radius],
         outputs=[animation_output, *variation_outputs, mel_plot],
     )
 

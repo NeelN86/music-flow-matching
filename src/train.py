@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from src.config import CHECKPOINT_DIR, FLOW_BATCH_SIZE, FLOW_CHECKPOINT, FLOW_LR, FLOW_LR_MIN, FLOW_LR_WARMUP, FLOW_STEPS
+from src.config import CHECKPOINT_DIR, FLOW_BATCH_SIZE, FLOW_CHECKPOINT, FLOW_LR, FLOW_LR_MIN, FLOW_LR_WARMUP, FLOW_STEPS, VAE_LATENT_DIM
 from src.model import VelocityMLP
 from src.vae import AudioVAE
 
@@ -70,11 +70,11 @@ def train_flow(
 
         # x1: reparameterized latent; style: deterministic mu
         std = (0.5 * logvar).exp()
-        x1 = mu + std * torch.randn_like(std)   # [B, 2]
-        style = mu                               # [B, 2]
+        x1 = mu + std * torch.randn_like(std)          # [B, VAE_LATENT_DIM]
+        style = mu                                     # [B, VAE_LATENT_DIM]
 
         B = x1.shape[0]
-        x0 = torch.randn(B, 2)                  # noise source
+        x0 = torch.randn(B, VAE_LATENT_DIM)           # noise source
         t = torch.rand(B)
 
         t_col = t.view(-1, 1)

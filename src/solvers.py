@@ -70,18 +70,25 @@ def velocity_field_on_grid(
     bounds: tuple[float, float, float, float] = (-3.0, 3.0, -3.0, 3.0),
     res: int = 20,
     style: Tensor | None = None,
+    pca: tuple[Tensor, Tensor] | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Evaluate the velocity field on a regular 2D grid.
+
+    When pca is provided the grid lives in PCA-projected 2D space: grid points are
+    back-projected to the full latent space before the model forward pass, and the
+    resulting velocities are projected back to 2D for display.
 
     Args:
         model:  Trained VelocityMLP.
         t:      Time in [0, 1].
-        bounds: (x_min, x_max, y_min, y_max).
+        bounds: (x_min, x_max, y_min, y_max) in the 2D display space.
         res:    Grid resolution (res × res points).
-        style:  [1, 2] style vector, broadcast to all grid points. None -> zeros.
+        style:  [1, D] or [res*res, D] style vector. None -> zeros.
+        pca:    (mean [D], components [2, D]) torch tensors for 16D↔2D projection.
+                None assumes the model already operates in 2D.
 
     Returns:
-        (X, Y, U, V) each [res, res] — grid coordinates and velocity components.
+        (X, Y, U, V) each [res, res] — 2D grid coordinates and velocity components.
     """
     model.eval()
     x_min, x_max, y_min, y_max = bounds
@@ -89,15 +96,26 @@ def velocity_field_on_grid(
     ys = torch.linspace(y_min, y_max, res)
 
     X, Y = torch.meshgrid(xs, ys, indexing="xy")
-    grid = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)  # [res*res, 2]
+    grid_2d = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)  # [G, 2]
 
-    t_batch = torch.full((grid.shape[0],), t)
+    if pca is not None:
+        pca_mean, pca_components = pca           # [D], [2, D]
+        grid = grid_2d @ pca_components + pca_mean.unsqueeze(0)  # [G, D]
+    else:
+        grid = grid_2d                           # [G, 2]
 
-    # Broadcast style [1, 2] → [res*res, 2] if provided
-    grid_style = style.expand(grid.shape[0], -1) if style is not None else None
+    G = grid.shape[0]
+    t_batch = torch.full((G,), t)
+    grid_style = style.expand(G, -1) if style is not None else None
 
-    v = model(grid, t_batch, grid_style)  # [res*res, 2]
+    v = model(grid, t_batch, grid_style)         # [G, D]
 
-    U = v[:, 0].reshape(res, res)
-    V = v[:, 1].reshape(res, res)
+    if pca is not None:
+        _, pca_components = pca
+        v_2d = v @ pca_components.T              # [G, 2]
+    else:
+        v_2d = v
+
+    U = v_2d[:, 0].reshape(res, res)
+    V = v_2d[:, 1].reshape(res, res)
     return X, Y, U, V

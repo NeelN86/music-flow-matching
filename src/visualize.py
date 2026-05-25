@@ -36,6 +36,7 @@ def animate_flow(
     model: VelocityMLP,
     x0: Tensor,
     style: Tensor | None = None,
+    pca: tuple | None = None,
     n_steps: int = ANIMATION_N_STEPS,
     bounds: tuple[float, float, float, float] = (-3.0, 3.0, -3.0, 3.0),
     grid_res: int = 20,
@@ -50,10 +51,13 @@ def animate_flow(
 
     Args:
         model:     Trained VelocityMLP.
-        x0:        [B, 2] initial noise positions.
-        style:     [1, 2] or [B, 2] VAE mu conditioning. None → unconditional.
+        x0:        [B, latent_dim] initial positions.
+        style:     [1, latent_dim] VAE mu conditioning. None → unconditional.
+        pca:       (mean [D] np.ndarray, components [2, D] np.ndarray) for
+                   projecting a high-dim latent space to 2D for display.
+                   None assumes the model already operates in 2D.
         n_steps:   Integration steps = animation frames.
-        bounds:    (x_min, x_max, y_min, y_max).
+        bounds:    (x_min, x_max, y_min, y_max) in the 2D display space.
         grid_res:  Quiver grid resolution.
         trail_len: Number of past frames shown per particle.
         out_path:  GIF output path.
@@ -62,27 +66,48 @@ def animate_flow(
     Returns:
         Absolute path to the saved GIF.
     """
+    import numpy as np
+
     model.eval()
 
-    # Pre-compute full trajectory [n_steps+1, B, 2]
-    traj = euler_integrate(model, x0, n_steps=n_steps, style=style).numpy()
+    # Pre-compute full trajectory [n_steps+1, B, latent_dim]
+    traj_full = euler_integrate(model, x0, n_steps=n_steps, style=style).numpy()
     B = x0.shape[0]
+    N = n_steps + 1
+
+    # Project trajectory to 2D for display
+    if pca is not None:
+        pca_mean_np, pca_comp_np = pca          # [D], [2, D] numpy
+        D = pca_mean_np.shape[0]
+        traj_flat = traj_full.reshape(-1, D) - pca_mean_np
+        traj = (traj_flat @ pca_comp_np.T).reshape(N, B, 2)
+    else:
+        traj = traj_full
 
     # Pre-compute ALL quiver grids in a single batched forward pass
     x_min, x_max, y_min, y_max = bounds
     xs = torch.linspace(x_min, x_max, grid_res)
     ys = torch.linspace(y_min, y_max, grid_res)
     Xg, Yg = torch.meshgrid(xs, ys, indexing="xy")  # [res, res]
-    grid = torch.stack([Xg.reshape(-1), Yg.reshape(-1)], dim=1)  # [G, 2]
+    grid_2d = torch.stack([Xg.reshape(-1), Yg.reshape(-1)], dim=1)  # [G, 2]
     G = grid_res * grid_res
-    N = n_steps + 1
     ts = torch.linspace(0.0, 1.0, N)  # [N]
 
     with torch.no_grad():
-        grid_all = grid.unsqueeze(0).expand(N, -1, -1).reshape(N * G, 2)
+        if pca is not None:
+            pca_mean_t = torch.from_numpy(pca_mean_np).float()
+            pca_comp_t = torch.from_numpy(pca_comp_np).float()
+            grid_full = grid_2d @ pca_comp_t + pca_mean_t.unsqueeze(0)  # [G, D]
+            grid_all = grid_full.unsqueeze(0).expand(N, -1, -1).reshape(N * G, D)
+        else:
+            grid_all = grid_2d.unsqueeze(0).expand(N, -1, -1).reshape(N * G, 2)
+
         t_all = ts.unsqueeze(1).expand(N, G).reshape(N * G)
         style_all = style.expand(N * G, -1) if style is not None else None
-        v_all = model(grid_all, t_all, style_all)  # [N*G, 2]
+        v_all = model(grid_all, t_all, style_all)  # [N*G, latent_dim]
+
+        if pca is not None:
+            v_all = v_all @ pca_comp_t.T        # [N*G, 2]
 
     U_all = v_all[:, 0].reshape(N, grid_res, grid_res).numpy()
     V_all = v_all[:, 1].reshape(N, grid_res, grid_res).numpy()
@@ -160,6 +185,7 @@ def render_static_quiver(
     model: VelocityMLP,
     t: float,
     style: Tensor | None = None,
+    pca: tuple | None = None,
     bounds: tuple[float, float, float, float] = (-3.0, 3.0, -3.0, 3.0),
     res: int = 25,
     ax: plt.Axes | None = None,
@@ -172,7 +198,14 @@ def render_static_quiver(
     else:
         fig = ax.figure
 
-    X, Y, U, V = velocity_field_on_grid(model, t, bounds, res, style=style)
+    pca_torch = None
+    if pca is not None:
+        import numpy as np
+        pca_mean_t = torch.from_numpy(pca[0]).float()
+        pca_comp_t = torch.from_numpy(pca[1]).float()
+        pca_torch = (pca_mean_t, pca_comp_t)
+
+    X, Y, U, V = velocity_field_on_grid(model, t, bounds, res, style=style, pca=pca_torch)
     X, Y = X.numpy(), Y.numpy()
     U, V = U.numpy(), V.numpy()
     mag = np.hypot(U, V)

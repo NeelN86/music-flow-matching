@@ -13,10 +13,10 @@ N_FRAMES: int = 256                 # target width after pad/truncate
 VAE_CHANNELS: list = [1, 32, 64, 128, 256]
 VAE_FLAT_DIM: int = 256 * 5 * 16   # 20480
 VAE_BOTTLENECK_FC: int = 512
-VAE_LATENT_DIM: int = 2            # 2D bottleneck — non-negotiable for visualization
+VAE_LATENT_DIM: int = 16           # 16D bottleneck — projected to 2D via PCA for visualization
 
 # ── VAE training ──────────────────────────────────────────────────────────────
-VAE_BETA: float = 0.1              # lowered from 0.5 — posterior collapse observed at 0.5
+VAE_BETA: float = 0.001            # lowered from 0.1 — prioritise reconstruction over KL structure
 VAE_LR: float = 1e-3
 VAE_BATCH_SIZE: int = 64
 VAE_EPOCHS: int = 30
@@ -45,7 +45,7 @@ ANIMATION_DURATION_S: float = 3.5  # 70 frames at 20fps
 ANIMATION_N_STEPS: int = 70        # = ANIMATION_FPS * ANIMATION_DURATION_S
 
 # ── Vocoder ───────────────────────────────────────────────────────────────────
-GRIFFIN_LIM_ITERS: int = 60
+GRIFFIN_LIM_ITERS: int = 128
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 CHECKPOINT_DIR: str = "checkpoints"

@@ -18,33 +18,37 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from src.config import FLOW_HIDDEN_WIDTH, FLOW_N_HIDDEN
+from src.config import FLOW_HIDDEN_WIDTH, FLOW_N_HIDDEN, VAE_LATENT_DIM
 
 
 class VelocityMLP(nn.Module):
     """Style-conditioned velocity field MLP.
 
-    3 hidden layers, width 256, SiLU activation — identical structure to the
-    prior toy flow matching project.
+    3 hidden layers, width 256, SiLU activation.
+
+    Input:  [B, 2*latent_dim+1] = cat(position[latent_dim], t[1], style[latent_dim])
+    Output: [B, latent_dim] predicted velocity
 
     Args:
+        latent_dim:   Dimension of the latent space (defaults to VAE_LATENT_DIM).
         hidden_width: Width of each hidden layer.
         n_hidden:     Number of hidden layers.
     """
 
     def __init__(
         self,
+        latent_dim: int = VAE_LATENT_DIM,
         hidden_width: int = FLOW_HIDDEN_WIDTH,
         n_hidden: int = FLOW_N_HIDDEN,
     ) -> None:
         super().__init__()
-        # Input: (x, y, t, style_x, style_y) = 5 dims
-        in_dim = 5
+        self.latent_dim = latent_dim
+        in_dim = 2 * latent_dim + 1  # position + time + style
         layers: list[nn.Module] = []
         for _ in range(n_hidden):
             layers += [nn.Linear(in_dim, hidden_width), nn.SiLU()]
             in_dim = hidden_width
-        layers.append(nn.Linear(hidden_width, 2))
+        layers.append(nn.Linear(hidden_width, latent_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(
@@ -56,14 +60,14 @@ class VelocityMLP(nn.Module):
         """Predict velocity at position x and time t, conditioned on style.
 
         Args:
-            x:     [B, 2] spatial coordinates in 2D latent space.
+            x:     [B, latent_dim] coordinates in latent space.
             t:     [B] or scalar, times in [0, 1].
-            style: [B, 2] or [1, 2] VAE mu of the conditioning audio.
-                   Broadcast to batch dim if shape is [1, 2].
+            style: [B, latent_dim] or [1, latent_dim] VAE mu of the conditioning audio.
+                   Broadcast to batch dim if [1, latent_dim].
                    If None, uses zeros (unconditional).
 
         Returns:
-            [B, 2] predicted velocity (vx, vy).
+            [B, latent_dim] predicted velocity.
         """
         B = x.shape[0]
 
@@ -71,9 +75,9 @@ class VelocityMLP(nn.Module):
         t_col = t.view(-1, 1).expand(B, 1) if t.numel() > 1 else t.view(1, 1).expand(B, 1)
 
         if style is None:
-            style = torch.zeros(B, 2, device=x.device, dtype=x.dtype)
+            style = torch.zeros(B, self.latent_dim, device=x.device, dtype=x.dtype)
         else:
-            style = style.expand(B, -1)  # handles [1,2] → [B,2] broadcast
+            style = style.expand(B, -1)
 
-        inp = torch.cat([x, t_col, style], dim=1)  # [B, 5]
+        inp = torch.cat([x, t_col, style], dim=1)  # [B, 2*latent_dim+1]
         return self.net(inp)

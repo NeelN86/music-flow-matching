@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import numpy as np
 import torch
 
-from src.config import N_FRAMES, N_MELS
+from src.config import N_FRAMES, N_MELS, VAE_LATENT_DIM
 from src.vae import AudioVAE
 from src.vocoder import decode_batch, mel_to_wav
 
@@ -36,7 +36,7 @@ def test_decode_batch_returns_paths():
     """decode_batch with 4 latents returns 4 existing file paths."""
     vae = AudioVAE()
     vae.eval()
-    latents = torch.randn(4, 2)
+    latents = torch.randn(4, VAE_LATENT_DIM)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Patch Griffin-Lim iters via a wrapper
@@ -62,7 +62,7 @@ def test_decode_batch_parallel_faster():
 
     vae = AudioVAE()
     vae.eval()
-    latents = torch.randn(4, 2)
+    latents = torch.randn(4, VAE_LATENT_DIM)
     with torch.no_grad():
         mels = vae.decode(latents)  # [4, 1, N_MELS, N_FRAMES]
     mel_list = [mels[i, 0].numpy() for i in range(4)]
