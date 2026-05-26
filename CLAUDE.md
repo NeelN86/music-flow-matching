@@ -9,7 +9,7 @@ A Gradio app where a user records/uploads a melody (4–10s) and the app generat
 - **Remote**: https://github.com/NeelN86/music-flow-matching
 - All commits go here — do NOT commit to the parent `Claude_projects/` repo
 
-## Current state — ALL STEPS COMPLETE (2026-05-25)
+## Current state — ALL STEPS COMPLETE (2026-05-26)
 
 All major work is done. HiFi-GAN vocoder integrated and verified. VAE upgraded to 16D latent with PCA visualization.
 
@@ -88,6 +88,34 @@ Griffin-Lim produces buzzy, artifact-heavy audio. HiFi-GAN is a neural vocoder t
 
 ---
 
+## Key fixes made (2026-05-26 session)
+
+### 5. Variation diversity fix
+**Problem**: All 4 variations were near-identical. Two compounding causes:
+1. `_make_initial_particles` was starting particles at `mu ± radius*PC_direction` — i.e., near `mu`, which is OOD for the flow model (trained on x0 ~ N(0,I)).
+2. All 4 particles used the **same** style vector `mu`, so the velocity field pulled them all to the same attractor.
+
+**Fix** (`app.py`):
+- Removed `_make_initial_particles(mu, radius)` — replaced with `_make_initial_particles()` that always returns pure `N(0,I)` noise (what the flow model expects).
+- Added `_make_per_particle_styles(mu, diversity)` that gives each particle its own style: `mu + diversity * N(0,I)`. Different style attractors → genuinely different endpoints.
+- Renamed "Variation radius" UI slider → **"Diversity"** (0=identical, 1.0=default, 3.0=very diverse).
+- `euler_integrate` already supports `[B, D]` per-particle style tensors — no solver changes needed.
+
+### 6. Mel spectrogram on confirm
+**Problem**: Mel spectrogram only appeared after "Generate Variations", not after confirming audio.
+
+**Fix** (`app.py`): `confirm_recording` now computes and returns the mel plot immediately — useful for verifying input is being read correctly before running the full generation pipeline.
+
+### 7. VAE domain mismatch (diagnosed, not fully fixable without retraining)
+The VAE was trained exclusively on NSynth (sustained instrument notes). Personal microphone recordings are OOD → poor reconstruction is expected. Best proxies in the existing dataset:
+- `vocal_acoustic_000-*-050.wav` — closest to humming/singing
+- `flute_acoustic_002-*-050.wav` — pure sustained tones
+- `reed_acoustic_*-050.wav` — breathy, expressive
+
+If personal audio support is needed in the future, the VAE would need to be retrained on a mixed dataset (NSynth + voice data).
+
+---
+
 ## Architecture quick reference
 
 ### VAE conv dims (kernel=4, stride=2, padding=1)
@@ -121,8 +149,9 @@ Fallback (Griffin-Lim, if HiFi-GAN unavailable):
 ### Generation threading model (app.py)
 ```
 1. load_audio → audio_to_mel → normalize_mel → vae.encode → mu [1,16] (style)
-2. _make_initial_particles(mu, radius) → 4 start points near mu in PC1/PC2 dirs
-3. euler_integrate(4 noise samples, style=mu, steps=100) → trajectory [101, 4, 16]
+2. _make_initial_particles() → 4 pure N(0,I) noise samples [4, 16]
+   _make_per_particle_styles(mu, diversity) → 4 style vectors [4, 16]
+3. euler_integrate(x0, style=[4,16], steps=100) → trajectory [101, 4, 16]
 4. Thread(target=decode_batch, args=(final_latents, vae.decode, ...))  ← HiFi-GAN
 5. vis_pca = _pca or fallback SVD from trajectory
 6. animate_flow(trajectory, pca=vis_pca) → GIF [70 frames @ 20fps]
@@ -159,6 +188,7 @@ data/nsynth-valid/   — full split: 12,678 samples used for flow model retrain
 ## Known issues / potential next work
 
 - **Audio quality**: HiFi-GAN should be much cleaner than Griffin-Lim, but variations are generated from 16D flow endpoints that may not reconstruct perfectly. The VAE reconstruction is the ceiling — test "Reconstruct Input" button to hear the VAE ceiling.
+- **Personal audio**: VAE trained only on NSynth — personal microphone recordings reconstruct poorly (domain mismatch). Use `vocal_acoustic_*` or `flute_acoustic_*` NSynth files as the best proxies. Full fix requires retraining VAE on mixed dataset.
 - **Test suite**: `tests/test_vocoder.py` tests still call `mel_to_wav` (Griffin-Lim) directly and use `GRIFFIN_LIM_ITERS`. The HiFi-GAN path is not exercised in the test suite (by design — it requires the 80MB checkpoint).
 - **Latent cache**: `outputs/latents_cache.npz` must be regenerated if VAE is retrained. Delete the file and click "Load latent space" in the app.
 
@@ -167,5 +197,6 @@ data/nsynth-valid/   — full split: 12,678 samples used for flow model retrain
 "Resume the project. Read CLAUDE.md first.
 VAE is 16D, HiFi-GAN is the primary vocoder (loaded from `checkpoints/hifigan/`), PCA projects 16D latents to 2D for visualization.
 App runs — `python app.py` → http://127.0.0.1:7860.
-Flow: record/upload → 'Use this recording ▶' → preview → 'Generate Variations'.
-Check if audio quality is acceptable with HiFi-GAN. If variations still sound bad, the bottleneck is VAE reconstruction quality (test with 'Reconstruct Input' button)."
+Flow: record/upload → 'Use this recording ▶' → mel spectrogram shows immediately → 'Generate Variations'.
+Best test input: upload a file from `data/nsynth-valid/audio/vocal_acoustic_000-*-050.wav`.
+Diversity slider (0–3) controls per-particle style noise for variation spread."

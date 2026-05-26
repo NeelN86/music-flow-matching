@@ -171,27 +171,24 @@ def _load_space_handler():
 
 # ── Particle initialisation helpers ───────────────────────────────────────────
 
-def _make_initial_particles(mu: torch.Tensor, radius: float) -> torch.Tensor:
-    """N_VARIATIONS starting positions spread around mu in the latent space.
+def _make_initial_particles() -> torch.Tensor:
+    """N_VARIATIONS starting positions sampled from N(0,I).
 
-    radius=0  → pure N(0,I) noise (original random behaviour).
-    radius>0  → if PCA is loaded, spread along ±PC1 and ±PC2 (the two most
-                important variation axes); otherwise spread on a unit sphere
-                scaled to radius. Keeps particles near the input style while
-                guaranteeing spatial diversity.
+    Pure noise start is what the flow model was trained on (x0 ~ N(0,I) → x1 ~ data).
+    Starting near mu instead produces OOD inputs for the flow model and reduces diversity.
     """
-    if radius == 0.0:
-        return torch.randn(N_VARIATIONS, VAE_LATENT_DIM)
-    if _pca is not None:
-        _, pca_comp = _pca
-        pc1 = torch.from_numpy(pca_comp[0]).float()   # [D]
-        pc2 = torch.from_numpy(pca_comp[1]).float()   # [D]
-        directions = torch.stack([pc1, pc2, -pc1, -pc2])   # [4, D]
-        offsets = radius * directions
-    else:
-        offsets = torch.randn(N_VARIATIONS, VAE_LATENT_DIM)
-        offsets = offsets / offsets.norm(dim=1, keepdim=True) * radius
-    return mu.expand(N_VARIATIONS, -1).clone() + offsets
+    return torch.randn(N_VARIATIONS, VAE_LATENT_DIM)
+
+
+def _make_per_particle_styles(mu: torch.Tensor, diversity: float) -> torch.Tensor:
+    """Per-particle style vectors: mu + diversity * N(0,I).
+
+    diversity=0   → all 4 particles use identical style (mu) → near-identical outputs.
+    diversity>0   → each particle gets a different style attractor → diverse outputs.
+    Recommended range: 0.5–2.0.
+    """
+    noise = torch.randn(N_VARIATIONS, VAE_LATENT_DIM) * diversity
+    return mu.expand(N_VARIATIONS, -1).clone() + noise
 
 
 # ── Core generation ────────────────────────────────────────────────────────────
@@ -208,12 +205,19 @@ def _resolve_audio_path(audio_path) -> str:
 
 
 def confirm_recording(audio_input):
-    """Copy the recorded/uploaded audio into the confirmed state + preview."""
+    """Copy the recorded/uploaded audio into confirmed state, preview, and mel plot."""
     if audio_input is None:
-        return None, None, "No audio — record or upload first."
+        return None, None, "No audio — record or upload first.", None
     path = _resolve_audio_path(audio_input)
     name = os.path.basename(path)
-    return path, path, f"Ready: {name}"
+    try:
+        wav = load_audio(path)
+        mel = audio_to_mel(wav)
+        mel_t = normalize_mel(mel).unsqueeze(0).unsqueeze(0)
+        mel_fig = mel_thumbnail(mel_t[0], title="Input mel")
+    except Exception:
+        mel_fig = None
+    return path, path, f"Ready: {name}", mel_fig
 
 
 def reconstruct_input(audio_path) -> str:
@@ -241,7 +245,7 @@ def generate_variations(
     audio_path,
     style_offset_x: float = 0.0,
     style_offset_y: float = 0.0,
-    variation_radius: float = 1.0,
+    diversity: float = 1.0,
 ) -> tuple:
     """Main handler: input audio → animation GIF + 4 WAV outputs + mel figure."""
     if _vae is None or _flow_model is None:
@@ -261,9 +265,10 @@ def generate_variations(
         offset = torch.tensor([[style_offset_x, style_offset_y]])
         mu = mu + offset
 
-    # 2. Integrate N_VARIATIONS noise particles (Fix B+D: spread around mu)
-    x0 = _make_initial_particles(mu, variation_radius)
-    trajectory = euler_integrate(_flow_model, x0, n_steps=EULER_STEPS, style=mu)
+    # 2. Pure noise start (what the flow model was trained on) + per-particle styles
+    x0 = _make_initial_particles()
+    styles = _make_per_particle_styles(mu, diversity)  # [N_VARIATIONS, D]
+    trajectory = euler_integrate(_flow_model, x0, n_steps=EULER_STEPS, style=styles)
     final_latents = trajectory[-1]  # [N_VARIATIONS, VAE_LATENT_DIM]
 
     # 3. Decode in background so it runs concurrently with animate_flow
@@ -372,7 +377,7 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
     confirm_btn.click(
         confirm_recording,
         inputs=[audio_recorder],
-        outputs=[confirmed_audio, audio_preview, input_status],
+        outputs=[confirmed_audio, audio_preview, input_status, mel_plot],
     )
 
     # Fix A — VAE reconstruction baseline
@@ -395,8 +400,8 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
         outputs=[reconstruction_audio],
     )
 
-    # Style offsets + variation radius
-    with gr.Accordion("Style offsets & variation radius", open=False):
+    # Style offsets + diversity
+    with gr.Accordion("Style offsets & diversity", open=False):
         gr.Markdown(
             "**Style offsets:** shift the input's style vector before generating. "
             "Positive X → brighter timbres; Y shifts pitch character."
@@ -405,14 +410,13 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
             style_x = gr.Slider(-1.0, 1.0, value=0.0, step=0.1, label="Style offset X")
             style_y = gr.Slider(-1.0, 1.0, value=0.0, step=0.1, label="Style offset Y")
         gr.Markdown(
-            "**Variation radius:** how far each of the 4 particles starts from the input style. "
-            "Smaller → closer to input, more similar to each other. "
-            "Larger → more diverse but may stray from input character. "
-            "0 = original random noise (unpredictable)."
+            "**Diversity:** how different each variation sounds from the others. "
+            "0 = all 4 are near-identical (strongly anchored to your input). "
+            "Higher = more varied outputs but further from original character."
         )
-        variation_radius = gr.Slider(
+        diversity_slider = gr.Slider(
             0.0, 3.0, value=1.0, step=0.1,
-            label="Variation radius",
+            label="Diversity",
         )
 
     generate_btn = gr.Button("Generate Variations", variant="primary")
@@ -447,7 +451,7 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
 
     generate_btn.click(
         generate_variations,
-        inputs=[confirmed_audio, style_x, style_y, variation_radius],
+        inputs=[confirmed_audio, style_x, style_y, diversity_slider],
         outputs=[animation_output, *variation_outputs, mel_plot],
     )
 
