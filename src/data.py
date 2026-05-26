@@ -253,7 +253,10 @@ class FlatAudioDataset(Dataset):
         if not os.path.isdir(audio_dir):
             raise FileNotFoundError(f"Audio directory not found: {audio_dir}")
 
-        wav_files = sorted(Path(audio_dir).rglob("*.wav"))
+        wav_files = sorted(
+            p for p in Path(audio_dir).rglob("*.wav")
+            if not p.name.startswith("._") and "__MACOSX" not in p.parts
+        )
         if not wav_files:
             raise FileNotFoundError(f"No .wav files found under {audio_dir}")
 
