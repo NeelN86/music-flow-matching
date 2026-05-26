@@ -230,3 +230,71 @@ def make_dataloader(
     often exceeds the I/O benefit for small-to-medium NSynth subsets.
     """
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+
+class FlatAudioDataset(Dataset):
+    """Dataset over a flat or nested directory of WAV files — no JSON needed.
+
+    Scans `audio_dir` recursively for *.wav files.  Compatible with VocalSet,
+    LJSpeech, or any directory of mono/stereo WAV files.
+
+    Each item: (mel [1, N_MELS, N_FRAMES], label_str, filename_str)
+    The `label` is a fixed string applied to every sample (e.g. "vocal").
+    """
+
+    def __init__(
+        self,
+        audio_dir: str,
+        label: str = "vocal",
+        max_samples: int | None = None,
+        normalize: bool = True,
+    ) -> None:
+        audio_dir = str(audio_dir)
+        if not os.path.isdir(audio_dir):
+            raise FileNotFoundError(f"Audio directory not found: {audio_dir}")
+
+        wav_files = sorted(Path(audio_dir).rglob("*.wav"))
+        if not wav_files:
+            raise FileNotFoundError(f"No .wav files found under {audio_dir}")
+
+        if max_samples is not None and max_samples < len(wav_files):
+            random.shuffle(wav_files)
+            wav_files = wav_files[:max_samples]
+
+        self.wav_files: list[str] = [str(p) for p in wav_files]
+        self.label = label
+        self.normalize = normalize
+
+    def __len__(self) -> int:
+        return len(self.wav_files)
+
+    def __getitem__(self, idx: int) -> tuple[Tensor, str, str]:
+        path = self.wav_files[idx]
+        wav = load_audio(path)
+        mel = audio_to_mel(wav)
+        mel_t = torch.from_numpy(mel).unsqueeze(0)   # [1, N_MELS, N_FRAMES]
+        if self.normalize:
+            mel_t = normalize_mel(mel_t)
+        return mel_t, self.label, os.path.basename(path)
+
+
+def compute_mel_stats_mixed(
+    audio_dirs: list[str],
+    max_samples_per_dir: int = 2000,
+) -> tuple[float, float]:
+    """Compute global (mean, std) over log-mel values from multiple audio directories.
+
+    Use this instead of compute_mel_stats when training on a mixed dataset.
+    Recomputing stats is necessary because adding voice data shifts the distribution.
+
+    Returns:
+        (mean, std) as Python floats — paste into config.MEL_MEAN / config.MEL_STD.
+    """
+    all_values: list[np.ndarray] = []
+    for audio_dir in audio_dirs:
+        dataset = FlatAudioDataset(audio_dir, normalize=False, max_samples=max_samples_per_dir)
+        for mel_t, _, _ in dataset:
+            all_values.append(mel_t.numpy().ravel())
+
+    concat = np.concatenate(all_values)
+    return float(concat.mean()), float(concat.std())

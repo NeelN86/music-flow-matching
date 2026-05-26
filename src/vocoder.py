@@ -14,6 +14,10 @@
 #   power   = 10^(mel_db / 10)                      (linear power)
 #   log_mel = log(power + 1e-9)                     (natural log, ~-20..0)
 #   This is the format the SpeechBrain HiFi-GAN was trained with.
+#
+# Post-processing (applied to all output paths):
+#   mel: mild temporal smoothing (Gaussian σ=1 frame) reduces VAE frame jitter
+#   wav: 20ms fade in/out removes clicks; peak-normalised to 0.95
 
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
+from scipy.ndimage import gaussian_filter1d
 from torch import Tensor
 
 from src.config import (
@@ -39,6 +44,27 @@ from src.config import (
 
 _hifigan = None   # cached after first load
 _hifigan_failed = False  # set True if load/inference ever fails, skips retries
+
+
+def _smooth_mel(mel_np: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+    """Gaussian temporal smoothing along the time axis of a [N_MELS, T] mel.
+
+    sigma=1 frame ≈ 16ms at hop=256/sr=16kHz.  Reduces frame-to-frame
+    jitter introduced by the VAE decoder without blurring note onsets badly.
+    """
+    return gaussian_filter1d(mel_np, sigma=sigma, axis=1).astype(np.float32)
+
+
+def _postprocess_wav(wav: np.ndarray, sr: int = SAMPLE_RATE, fade_ms: int = 20) -> np.ndarray:
+    """Peak-normalise to 0.95 and apply a short linear fade in/out."""
+    fade_n = int(sr * fade_ms / 1000)
+    wav = wav.copy()
+    wav[:fade_n] *= np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
+    wav[-fade_n:] *= np.linspace(1.0, 0.0, fade_n, dtype=np.float32)
+    peak = np.abs(wav).max()
+    if peak > 1e-6:
+        wav *= 0.95 / peak
+    return wav
 
 
 def _load_hifigan():
@@ -77,6 +103,7 @@ def _mel_norm_to_log(mel_normalized: np.ndarray) -> torch.Tensor:
     """
     if mel_normalized.ndim == 3:
         mel_normalized = mel_normalized[0]      # [N_MELS, T]
+    mel_normalized = _smooth_mel(mel_normalized)
     mel_db = mel_normalized * MEL_STD + MEL_MEAN
     power = 10.0 ** (mel_db / 10.0)          # db_to_power inline — avoids librosa lazy-import conflict with SpeechBrain
     log_mel = np.log(power + 1e-9).astype(np.float32)
@@ -100,7 +127,7 @@ def mel_to_wav_hifigan(mels_normalized: list[np.ndarray]) -> list[np.ndarray]:
         wavs = model.decode_batch(mel_tensors)   # [B, 1, T_wav] or [B, T_wav]
 
     wavs = wavs.squeeze(1) if wavs.ndim == 3 else wavs
-    return [wavs[i].cpu().numpy().astype(np.float32) for i in range(wavs.shape[0])]
+    return [_postprocess_wav(wavs[i].cpu().numpy().astype(np.float32)) for i in range(wavs.shape[0])]
 
 
 def mel_to_wav(
@@ -119,11 +146,12 @@ def mel_to_wav(
     if mel_np.ndim == 3:
         mel_np = mel_np[0]
 
+    mel_np = _smooth_mel(mel_np)
     mel_db = mel_np * MEL_STD + MEL_MEAN
     power = 10.0 ** (mel_db / 10.0)
     stft_mag = librosa.feature.inverse.mel_to_stft(power, sr=SAMPLE_RATE, n_fft=N_FFT)
     wav = librosa.griffinlim(stft_mag, n_iter=n_iter, hop_length=HOP_LENGTH)
-    return wav.astype(np.float32)
+    return _postprocess_wav(wav.astype(np.float32))
 
 
 def decode_batch(

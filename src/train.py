@@ -50,7 +50,11 @@ def train_flow(
     Returns:
         (model in eval() mode, loss history list).
     """
-    model = VelocityMLP()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+
+    model = VelocityMLP().to(device)
+    vae = vae.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = _cosine_schedule(optimizer, steps, lr, FLOW_LR_MIN, FLOW_LR_WARMUP)
     loss_history: list[float] = []
@@ -62,7 +66,7 @@ def train_flow(
 
     for step in range(steps):
         batch = next(data_iter)
-        mels = batch[0]  # [B, 1, N_MELS, N_FRAMES]
+        mels = batch[0].to(device)  # [B, 1, N_MELS, N_FRAMES]
 
         # Encode with frozen VAE — no gradient through it
         with torch.no_grad():
@@ -74,8 +78,8 @@ def train_flow(
         style = mu                                     # [B, VAE_LATENT_DIM]
 
         B = x1.shape[0]
-        x0 = torch.randn(B, VAE_LATENT_DIM)           # noise source
-        t = torch.rand(B)
+        x0 = torch.randn(B, VAE_LATENT_DIM, device=device)
+        t = torch.rand(B, device=device)
 
         t_col = t.view(-1, 1)
         x_t = (1.0 - t_col) * x0 + t_col * x1  # linear interpolation
@@ -101,7 +105,7 @@ def train_flow(
             print(f"step {step + 1:5d}/{steps}  loss={scalar:.4f}  lr={current_lr:.2e}")
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    torch.save(model.state_dict(), checkpoint_path)
+    torch.save(model.cpu().state_dict(), checkpoint_path)
     print(f"Saved flow model to {checkpoint_path}")
 
     model.eval()

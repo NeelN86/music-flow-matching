@@ -250,6 +250,71 @@ def train_vae(
     return model, history
 
 
+def train_vae_from_loader(
+    loader,
+    epochs: int = VAE_EPOCHS,
+    lr: float = VAE_LR,
+    beta: float = VAE_BETA,
+    checkpoint_path: str = VAE_CHECKPOINT,
+    beta_warmup_epochs: int = 5,
+    progress_cb: Callable[[int, int, float, float, float], None] | None = None,
+) -> tuple["AudioVAE", list[dict]]:
+    """Train AudioVAE from a pre-built DataLoader (accepts any dataset type).
+
+    Identical training logic to train_vae but the caller constructs the loader,
+    allowing ConcatDataset or any custom dataset to be passed in.
+    Automatically uses CUDA if available.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+
+    model = AudioVAE().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    history: list[dict] = []
+
+    model.train()
+    global_step = 0
+    for epoch in range(epochs):
+        beta_eff = beta * min(1.0, (epoch + 1) / max(1, beta_warmup_epochs))
+
+        for batch in loader:
+            mel_batch = batch[0].to(device)
+
+            optimizer.zero_grad()
+            recon, mu, logvar = model(mel_batch)
+            total, recon_loss, kl_loss = audio_vae_loss(recon, mel_batch, mu, logvar, beta_eff)
+            total.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            log = {
+                "epoch": epoch,
+                "step": global_step,
+                "total": total.item(),
+                "recon": recon_loss.item(),
+                "kl": kl_loss.item(),
+            }
+            history.append(log)
+
+            if progress_cb is not None:
+                progress_cb(epoch, global_step, total.item(), recon_loss.item(), kl_loss.item())
+
+            global_step += 1
+
+        print(
+            f"epoch {epoch + 1}/{epochs}  "
+            f"total={log['total']:.4f}  recon={log['recon']:.4f}  kl={log['kl']:.4f}  "
+            f"beta_eff={beta_eff:.3f}"
+        )
+
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    torch.save(model.cpu().state_dict(), checkpoint_path)
+    print(f"Saved VAE checkpoint to {checkpoint_path}")
+
+    model.eval()
+    return model, history
+
+
 def load_vae(path: str = VAE_CHECKPOINT) -> AudioVAE:
     """Load a saved AudioVAE from disk. Returns model in eval() mode."""
     model = AudioVAE()
