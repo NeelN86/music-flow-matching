@@ -48,6 +48,13 @@ _latent_labels: list[str] | None = None
 _pca: tuple[np.ndarray, np.ndarray] | None = None  # (mean [D], components [2, D])
 _LATENT_CACHE = os.path.join(OUTPUT_DIR, "latents_cache.npz")
 
+# Timbre targeting: per-instrument-family centroid vectors in latent space
+_centroids: dict[str, np.ndarray] | None = None
+_KNOWN_FAMILIES = [
+    "bass", "brass", "flute", "guitar", "keyboard",
+    "mallet", "organ", "reed", "string", "synth_lead", "vocal",
+]
+
 
 def _load_models() -> tuple[str, str]:
     """Load VAE and flow model from checkpoints. Returns (vae_status, flow_status)."""
@@ -77,7 +84,7 @@ def _load_models() -> tuple[str, str]:
 
 def _try_load_latent_cache() -> bool:
     """Load latent cache from disk if available. Returns True on success."""
-    global _latents, _latents_2d, _latent_labels, _pca
+    global _latents, _latents_2d, _latent_labels, _pca, _centroids
     if not os.path.exists(_LATENT_CACHE):
         return False
     data = np.load(_LATENT_CACHE, allow_pickle=True)
@@ -88,6 +95,7 @@ def _try_load_latent_cache() -> bool:
         _latents_2d = (_latents - _pca[0]) @ _pca[1].T  # [N, 2]
     else:
         _latents_2d = _latents  # fallback: assume already 2D
+    _centroids = {k[9:]: data[k] for k in data.files if k.startswith("centroid_")}
     return True
 
 
@@ -131,15 +139,24 @@ def _compute_latent_space(max_samples: int = 300) -> str:
     _pca = (mean, components)
     _latents_2d = centered @ components.T            # [N, 2]
 
+    # Compute per-family centroids for timbre targeting
+    family_groups: dict[str, list[int]] = {}
+    for i, fam in enumerate(_latent_labels):
+        family_groups.setdefault(fam, []).append(i)
+    _centroids = {fam: _latents[idxs].mean(axis=0) for fam, idxs in family_groups.items()}
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    centroid_kwargs = {f"centroid_{k}": v for k, v in _centroids.items()}
     np.savez(
         _LATENT_CACHE,
         latents=_latents,
         labels=np.array(_latent_labels),
         pca_mean=mean,
         pca_components=components,
+        **centroid_kwargs,
     )
-    return f"Loaded {len(_latents)} points ({len(set(_latent_labels))} families)."
+    n_centroids = len(_centroids)
+    return f"Loaded {len(_latents)} points ({len(set(_latent_labels))} families, {n_centroids} timbre centroids computed)."
 
 
 def _scrub_plot(scrub_x: float, scrub_y: float):
@@ -246,6 +263,8 @@ def generate_variations(
     style_offset_x: float = 0.0,
     style_offset_y: float = 0.0,
     diversity: float = 1.0,
+    target_timbre: str = "Match input",
+    timbre_blend: float = 0.5,
 ) -> tuple:
     """Main handler: input audio → animation GIF + 4 WAV outputs + mel figure."""
     if _vae is None or _flow_model is None:
@@ -264,6 +283,13 @@ def generate_variations(
     if style_offset_x != 0.0 or style_offset_y != 0.0:
         offset = torch.tensor([[style_offset_x, style_offset_y]])
         mu = mu + offset
+
+    # Timbre targeting: blend mu toward the chosen instrument family centroid
+    if target_timbre != "Match input" and _centroids and target_timbre in _centroids:
+        centroid = torch.from_numpy(_centroids[target_timbre]).float().unsqueeze(0)
+        mu = (1.0 - timbre_blend) * mu + timbre_blend * centroid
+    elif target_timbre != "Match input" and not _centroids:
+        print(f"Timbre targeting: centroids not loaded yet — click 'Load latent space' first.")
 
     # 2. Pure noise start (what the flow model was trained on) + per-particle styles
     x0 = _make_initial_particles()
@@ -400,8 +426,8 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
         outputs=[reconstruction_audio],
     )
 
-    # Style offsets + diversity
-    with gr.Accordion("Style offsets & diversity", open=False):
+    # Style offsets, diversity, timbre targeting
+    with gr.Accordion("Style offsets, diversity & timbre", open=False):
         gr.Markdown(
             "**Style offsets:** shift the input's style vector before generating. "
             "Positive X → brighter timbres; Y shifts pitch character."
@@ -418,6 +444,21 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
             0.0, 3.0, value=1.0, step=0.1,
             label="Diversity",
         )
+        gr.Markdown(
+            "**Target timbre:** blend your input's style toward a specific instrument family. "
+            "Requires clicking **Load latent space** first to compute centroids. "
+            "Blend = 0 keeps your input's character; Blend = 1 is the pure instrument sound."
+        )
+        with gr.Row():
+            timbre_dropdown = gr.Dropdown(
+                choices=["Match input"] + _KNOWN_FAMILIES,
+                value="Match input",
+                label="Target timbre",
+            )
+            timbre_blend_slider = gr.Slider(
+                0.0, 1.0, value=0.5, step=0.05,
+                label="Timbre blend",
+            )
 
     generate_btn = gr.Button("Generate Variations", variant="primary")
     animation_output = gr.Image(label="Particle flow animation", type="filepath")
@@ -451,7 +492,7 @@ with gr.Blocks(title="Musical Flow Matching") as demo:
 
     generate_btn.click(
         generate_variations,
-        inputs=[confirmed_audio, style_x, style_y, diversity_slider],
+        inputs=[confirmed_audio, style_x, style_y, diversity_slider, timbre_dropdown, timbre_blend_slider],
         outputs=[animation_output, *variation_outputs, mel_plot],
     )
 

@@ -9,7 +9,7 @@ A Gradio app where a user records/uploads a melody (4–10s) and the app generat
 - **Remote**: https://github.com/NeelN86/music-flow-matching
 - All commits go here — do NOT commit to the parent `Claude_projects/` repo
 
-## Current state — ALL STEPS COMPLETE (2026-05-26)
+## Current state — ALL STEPS COMPLETE + mixed dataset retrained (2026-05-27)
 
 All major work is done. HiFi-GAN vocoder integrated and verified. VAE upgraded to 16D latent with PCA visualization.
 
@@ -31,7 +31,7 @@ All major work is done. HiFi-GAN vocoder integrated and verified. VAE upgraded t
   - `generator.ckpt` — pre-trained HiFi-GAN weights (~80MB)
 
 ### Mel normalization stats (config.py)
-`MEL_MEAN = -43.9487`, `MEL_STD = 20.9642` — computed from nsynth-valid (2000 samples).
+`MEL_MEAN = -45.2344`, `MEL_STD = 20.7955` — recomputed from mixed dataset (NSynth-valid + VocalSet, 2000 samples each).
 
 ---
 
@@ -85,6 +85,29 @@ Griffin-Lim produces buzzy, artifact-heavy audio. HiFi-GAN is a neural vocoder t
 ### 4. New UI elements (app.py)
 - **"Reconstruct Input (VAE only)"** button + audio player: encodes input → decodes directly → plays back. Useful for checking VAE quality independently of flow model.
 - **"Variation radius"** slider (0–3, default 1.0): controls how far initial particles are spread from input mu (cardinal ±PC1/±PC2 directions).
+
+---
+
+## Key work done (2026-05-27 session)
+
+### 7. Mixed dataset retraining (NSynth + VocalSet)
+- Added `FlatAudioDataset` to `src/data.py` — scans any WAV directory recursively (handles VocalSet, LJSpeech, etc.)
+- Added `compute_mel_stats_mixed()` for recomputing mel stats across multiple directories
+- Updated `scripts/train_vae.py` and `scripts/train_flow.py` with `--extra_audio_dirs` flag
+- Added `train_vae_from_loader` and GPU support (`cuda` auto-detect) to both training functions
+- Created `colab_train_mixed.ipynb` — full GPU training notebook; downloads VocalSet (2.1 GB) automatically from Zenodo
+- Retrained VAE + flow model on NSynth-valid + VocalSet on Colab T4 (~25 min total)
+- New mel stats: `MEL_MEAN = -45.2344`, `MEL_STD = 20.7955`
+
+### 8. Audio post-processing
+- `src/vocoder.py`: Gaussian temporal mel smoothing (σ=1 frame) reduces VAE frame-to-frame jitter
+- `src/vocoder.py`: Peak normalization to 0.95 + 20ms fade in/out on all outputs (removes clicks)
+
+### 9. Timbre targeting
+- `app.py`: Per-instrument-family centroid vectors computed when "Load latent space" is clicked
+- Centroids stored in `outputs/latents_cache.npz` alongside PCA
+- New UI: **Target timbre** dropdown (bass/brass/flute/guitar/keyboard/mallet/organ/reed/string/synth_lead/vocal) + **Timbre blend** slider (0 = input style, 1 = pure instrument)
+- Blends `mu` toward selected centroid: `mu = (1-blend)*mu + blend*centroid`
 
 ---
 
@@ -187,16 +210,20 @@ data/nsynth-valid/   — full split: 12,678 samples used for flow model retrain
 
 ## Known issues / potential next work
 
-- **Audio quality**: HiFi-GAN should be much cleaner than Griffin-Lim, but variations are generated from 16D flow endpoints that may not reconstruct perfectly. The VAE reconstruction is the ceiling — test "Reconstruct Input" button to hear the VAE ceiling.
-- **Personal audio**: VAE trained only on NSynth — personal microphone recordings reconstruct poorly (domain mismatch). Use `vocal_acoustic_*` or `flute_acoustic_*` NSynth files as the best proxies. Full fix requires retraining VAE on mixed dataset.
-- **Test suite**: `tests/test_vocoder.py` tests still call `mel_to_wav` (Griffin-Lim) directly and use `GRIFFIN_LIM_ITERS`. The HiFi-GAN path is not exercised in the test suite (by design — it requires the 80MB checkpoint).
+- **Style offset broken**: The style offset X/Y sliders in the UI apply a 2D offset to mu directly, but mu is 16D — the offset only nudges the first 2 dimensions and has negligible effect. Needs to be reimplemented as a PCA-space offset (project offset through PCA components before adding to mu).
+- **Audio quality**: HiFi-GAN produces much cleaner audio than Griffin-Lim. VAE reconstruction is the ceiling — test "Reconstruct Input" to hear it. Mixed dataset retraining (NSynth + VocalSet) has improved voice/humming input quality.
+- **Personal audio**: Even with VocalSet added, arbitrary mic recordings may still sound imperfect. Best inputs: NSynth `vocal_acoustic_*` or `flute_acoustic_*` files, or clean sustained humming.
+- **Timbre targeting requires latent cache**: `_centroids` are stored in `outputs/latents_cache.npz`. User must click "Load latent space" once per session (or after VAE retrain) to compute centroids.
+- **Test suite**: `tests/test_vocoder.py` tests still call `mel_to_wav` (Griffin-Lim) directly. The HiFi-GAN path is not exercised in the test suite (by design — requires the 80MB checkpoint).
 - **Latent cache**: `outputs/latents_cache.npz` must be regenerated if VAE is retrained. Delete the file and click "Load latent space" in the app.
 
 ## Next Session Opener
 
 "Resume the project. Read CLAUDE.md first.
-VAE is 16D, HiFi-GAN is the primary vocoder (loaded from `checkpoints/hifigan/`), PCA projects 16D latents to 2D for visualization.
+VAE is 16D retrained on NSynth + VocalSet mixed dataset. HiFi-GAN is the primary vocoder. PCA projects 16D latents to 2D for visualization.
 App runs — `python app.py` → http://127.0.0.1:7860.
 Flow: record/upload → 'Use this recording ▶' → mel spectrogram shows immediately → 'Generate Variations'.
 Best test input: upload a file from `data/nsynth-valid/audio/vocal_acoustic_000-*-050.wav`.
-Diversity slider (0–3) controls per-particle style noise for variation spread."
+New features: timbre targeting dropdown (needs 'Load latent space' first), diversity slider.
+
+**Next fix needed**: Style offset sliders are broken — they apply a 2D offset to a 16D vector, so only dims 0-1 are nudged. Fix: reimplement as PCA-space offset (multiply offset by PCA components matrix before adding to mu)."
